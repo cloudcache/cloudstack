@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE clusters SET kubeconfig = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3459d966662d30fc277f0807cdef068abac033e874cb36e774b6a0ce954208a4"
+}

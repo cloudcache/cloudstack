@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT `value` FROM platform_config WHERE `key` = 'kubeconfig'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": {
+          "type": "Blob",
+          "flags": "NOT_NULL | BLOB | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 262140
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "632851bb57cf0e685d1425d31898afd9407c3ff592c7897c8c70fb56f75edf3a"
+}

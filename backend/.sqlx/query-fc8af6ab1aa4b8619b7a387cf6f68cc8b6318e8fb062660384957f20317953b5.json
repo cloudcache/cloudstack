@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM database_clusters WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "fc8af6ab1aa4b8619b7a387cf6f68cc8b6318e8fb062660384957f20317953b5"
+}

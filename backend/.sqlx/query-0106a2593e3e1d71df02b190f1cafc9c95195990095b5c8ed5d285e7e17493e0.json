@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE proxy_managers\n           SET name         = COALESCE(?, name),\n               host         = COALESCE(?, host),\n               api_base_url = COALESCE(?, api_base_url),\n               api_username = COALESCE(?, api_username),\n               api_password = COALESCE(?, api_password),\n               is_active    = COALESCE(?, is_active)\n           WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "0106a2593e3e1d71df02b190f1cafc9c95195990095b5c8ed5d285e7e17493e0"
+}

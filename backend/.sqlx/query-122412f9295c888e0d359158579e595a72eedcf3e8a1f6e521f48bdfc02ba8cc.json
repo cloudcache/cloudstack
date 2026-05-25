@@ -1,0 +1,47 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT a.name, a.app_type, p.name AS project_name\n           FROM apps a JOIN projects p ON a.project_id = p.id\n           WHERE a.id = ? AND a.project_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 512
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "app_type",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | ENUM",
+          "char_set": 224,
+          "max_size": 32
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "project_name",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 512
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "122412f9295c888e0d359158579e595a72eedcf3e8a1f6e521f48bdfc02ba8cc"
+}

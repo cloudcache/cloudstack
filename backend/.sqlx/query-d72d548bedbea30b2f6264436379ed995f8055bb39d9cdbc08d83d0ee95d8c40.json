@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE cluster_nodes\n           SET node_status = ?, pod_cidr = COALESCE(?, pod_cidr), last_seen_at = NOW()\n           WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "d72d548bedbea30b2f6264436379ed995f8055bb39d9cdbc08d83d0ee95d8c40"
+}

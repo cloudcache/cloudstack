@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO app_env_vars (id, app_id, key_name, value, is_secret)\n           VALUES (?, ?, ?, ?, ?)\n           ON DUPLICATE KEY UPDATE value = ?, is_secret = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "34f023854dbb4423a0914fe3f6287fec84770e91b07e7fdf48dc53fe1d1bc53a"
+}

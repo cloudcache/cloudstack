@@ -1,0 +1,47 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT balance, currency, updated_at FROM user_wallets WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "balance",
+        "type_info": {
+          "type": "NewDecimal",
+          "flags": "NOT_NULL",
+          "char_set": 63,
+          "max_size": 14
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "currency",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL",
+          "char_set": 224,
+          "max_size": 32
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": {
+          "type": "Datetime",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 19
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b8b2d32b2e1c76bff3a671e207b26071bf4367e7f6cc94206e51551c05617ef5"
+}

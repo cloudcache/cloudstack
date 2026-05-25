@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM database_instances WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "79b72efc11d8e9b73ecac82eeb2b8dd1614ccd49a6aaf5510fb8ae6112a6d4e7"
+}

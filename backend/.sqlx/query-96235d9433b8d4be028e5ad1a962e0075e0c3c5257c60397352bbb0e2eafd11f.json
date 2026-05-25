@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO proxy_managers (id, name, host, api_base_url, api_username, api_password)\n           VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "96235d9433b8d4be028e5ad1a962e0075e0c3c5257c60397352bbb0e2eafd11f"
+}

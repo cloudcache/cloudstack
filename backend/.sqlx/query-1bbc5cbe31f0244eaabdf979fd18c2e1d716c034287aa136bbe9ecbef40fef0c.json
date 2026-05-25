@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT role FROM project_members WHERE project_id = ? AND user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | ENUM | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 32
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1bbc5cbe31f0244eaabdf979fd18c2e1d716c034287aa136bbe9ecbef40fef0c"
+}

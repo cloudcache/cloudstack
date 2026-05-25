@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE backup_schedules\n           SET cron_expr      = COALESCE(?, cron_expr),\n               retention_days = COALESCE(?, retention_days),\n               is_active      = COALESCE(?, is_active)\n           WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "6b2537252e325e97335caa897513d7fb55457ce7d87ac26b955b559e8e136429"
+}

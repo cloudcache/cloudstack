@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM app_basic_auth WHERE app_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "5e9d50ef06a358b0545ea7a378afb85b9120908a6434cf03b0a5f79c09de3497"
+}

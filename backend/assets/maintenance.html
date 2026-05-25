@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>应用维护中</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      text-align: center;
+      padding: 3rem 2rem;
+      max-width: 480px;
+    }
+    .icon {
+      font-size: 4rem;
+      margin-bottom: 1.5rem;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      color: #f8fafc;
+    }
+    p {
+      font-size: 1rem;
+      color: #94a3b8;
+      line-height: 1.6;
+    }
+    .badge {
+      display: inline-block;
+      margin-top: 2rem;
+      padding: 0.25rem 0.75rem;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      color: #64748b;
+      letter-spacing: 0.05em;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🔧</div>
+    <h1>应用暂停中</h1>
+    <p>此应用当前处于维护状态，暂时无法访问。<br>请稍后再试，或联系平台管理员。</p>
+    <div class="badge">503 Service Unavailable · QuickStack</div>
+  </div>
+</body>
+</html>

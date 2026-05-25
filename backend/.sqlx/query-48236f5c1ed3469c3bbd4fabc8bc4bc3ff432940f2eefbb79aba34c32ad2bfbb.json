@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE projects SET display_name = COALESCE(?, display_name) WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "48236f5c1ed3469c3bbd4fabc8bc4bc3ff432940f2eefbb79aba34c32ad2bfbb"
+}

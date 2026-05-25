@@ -1,0 +1,36 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT a.pool_id, p.name AS namespace\n               FROM build_jobs bj\n               JOIN apps a ON a.id = bj.app_id\n               JOIN projects p ON p.id = a.project_id\n               WHERE bj.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pool_id",
+        "type_info": {
+          "type": "String",
+          "flags": "MULTIPLE_KEY",
+          "char_set": 224,
+          "max_size": 144
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "namespace",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 512
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "9c1bb5e44c0f18c0d0459d61a57689581103b2651e6f403256c254d25c5dab6c"
+}

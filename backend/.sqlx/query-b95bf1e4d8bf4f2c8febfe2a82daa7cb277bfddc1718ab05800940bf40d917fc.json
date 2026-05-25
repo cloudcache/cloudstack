@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT `value` FROM platform_config WHERE `key` = 'metrics_scrape_interval_secs'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": {
+          "type": "Blob",
+          "flags": "NOT_NULL | BLOB | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 262140
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b95bf1e4d8bf4f2c8febfe2a82daa7cb277bfddc1718ab05800940bf40d917fc"
+}

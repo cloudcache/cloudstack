@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE cluster_nodes\n           SET cpu_used_pct = ?, mem_used_mb = ?, disk_used_gb = ?, disk_total_gb = ?,\n               load1 = ?, metrics_updated_at = NOW()\n           WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "61235dffac25a9b08f76498fae50fdfa987ed70fa68a5fd93a5853f8e97a4d31"
+}

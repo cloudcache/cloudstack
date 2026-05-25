@@ -1,0 +1,36 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT created_by AS user_id, COUNT(*) AS db_count\n           FROM database_instances\n           WHERE status = 'ACTIVE'\n           GROUP BY created_by",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | MULTIPLE_KEY | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 144
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "db_count",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 21
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "20f5c2f9ef2ff8af899c2f439aa9e99869be30690835046c726827f4e0690845"
+}

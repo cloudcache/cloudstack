@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE app_managed_volumes SET name = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "611c899ca9d74e837b623c0eef2928acda237a9d6b69b394c82262eaab4632ff"
+}

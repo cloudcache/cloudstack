@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "df3c18d1b4305b1ce357bcbeb857f492b462f74f915a68eef7bee21aeba5d407"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at)\n               VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "3702105de5034007b3f8d72060af720969501b281e588159a9395bc2a2f051c4"
+}

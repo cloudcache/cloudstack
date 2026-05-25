@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE apps SET status = ? WHERE id = ? AND status = 'DEPLOYING'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "576c61b4d47cb9354c840c3f2087bd5fe375e00f0603a313c38aaa1396c28467"
+}

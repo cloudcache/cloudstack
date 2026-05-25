@@ -1,0 +1,58 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT bj.k8s_job_name, bj.status,\n                  a.pool_id, p.name AS namespace\n           FROM build_jobs bj\n           JOIN apps a ON a.id = bj.app_id\n           JOIN projects p ON p.id = a.project_id\n           WHERE bj.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "k8s_job_name",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "char_set": 224,
+          "max_size": 1024
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | MULTIPLE_KEY | ENUM",
+          "char_set": 224,
+          "max_size": 36
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "pool_id",
+        "type_info": {
+          "type": "String",
+          "flags": "MULTIPLE_KEY",
+          "char_set": 224,
+          "max_size": 144
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 512
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "71f3137b3549fcaf7b145b13ec0bd7754b957d83ef45bc8f21a46c8aa59f85e8"
+}

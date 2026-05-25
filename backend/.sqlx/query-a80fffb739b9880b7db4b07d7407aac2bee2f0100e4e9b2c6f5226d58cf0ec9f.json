@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT p.price_monthly FROM user_subscriptions s\n               JOIN subscription_plans p ON p.id = s.plan_id\n               WHERE s.user_id = ? AND s.status IN ('ACTIVE','OVERDUE')\n               ORDER BY s.created_at DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "price_monthly",
+        "type_info": {
+          "type": "NewDecimal",
+          "flags": "NOT_NULL",
+          "char_set": 63,
+          "max_size": 12
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a80fffb739b9880b7db4b07d7407aac2bee2f0100e4e9b2c6f5226d58cf0ec9f"
+}

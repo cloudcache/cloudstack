@@ -1,0 +1,17 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "moduleResolution": "node",
+        "module": "commonjs",
+        "outDir": "dist",
+        "lib": [
+            "ES2023"
+        ],
+        "target": "ES2023",
+        "isolatedModules": false,
+        "noEmit": false,
+    },
+    "include": [
+        "src/server.ts",
+    ]
+}

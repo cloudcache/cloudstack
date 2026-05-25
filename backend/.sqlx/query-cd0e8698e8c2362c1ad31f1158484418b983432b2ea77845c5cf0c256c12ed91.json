@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO ip_allocations (id, pool_id, ip_address, allocated_to, purpose)\n           VALUES (?, ?, ?, ?, 'app-network')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "cd0e8698e8c2362c1ad31f1158484418b983432b2ea77845c5cf0c256c12ed91"
+}

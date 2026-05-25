@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE app_managed_volumes SET share_with_others = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "1b71999cbf545eb82f2b65503565620e0a37563e80202c7564f5af6d89931c86"
+}

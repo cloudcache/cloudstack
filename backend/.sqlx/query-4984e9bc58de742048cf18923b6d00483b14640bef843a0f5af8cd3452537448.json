@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO backup_schedules\n           (id, app_id, s3_target_id, cron_expr, retention_days, backup_type, db_instance_id)\n           VALUES (?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "4984e9bc58de742048cf18923b6d00483b14640bef843a0f5af8cd3452537448"
+}

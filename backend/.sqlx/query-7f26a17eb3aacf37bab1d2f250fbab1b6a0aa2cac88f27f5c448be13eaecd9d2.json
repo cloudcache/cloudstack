@@ -1,0 +1,36 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT COALESCE(cpu_limit_mcores, cpu_reservation_mcores, 0) AS cpu,\n                      COALESCE(mem_limit_mb, mem_reservation_mb, 0) AS mem\n               FROM apps WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cpu",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 10
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "mem",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 10
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7f26a17eb3aacf37bab1d2f250fbab1b6a0aa2cac88f27f5c448be13eaecd9d2"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE invoices SET status = 'PAID', paid_at = NOW() WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "b8efbb4d1b71d65ce975d276ae0ee3aa113bde5d86e70c671f3e6865c9443fe0"
+}

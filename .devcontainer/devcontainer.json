@@ -1,0 +1,29 @@
+{
+	"name": "quick-stack",
+	"dockerComposeFile": "./docker.compose.yml",
+	"service": "vscode-container",
+	"workspaceFolder": "/workspace",
+	"shutdownAction": "stopCompose",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"Orta.vscode-jest",
+				"pflannery.vscode-versionlens",
+				"github.vscode-github-actions",
+				"bradlc.vscode-tailwindcss",
+				"GitHub.copilot",
+				"GitHub.copilot-chat",
+				"oven.bun-vscode",
+				"christian-kohler.path-intellisense",
+				"esbenp.prettier-vscode",
+				"VisualStudioExptTeam.vscodeintellicode",
+				"mhutchie.git-graph",
+				"donjayamanne.githistory",
+				"mindaro.mindaro",
+				"shd101wyy.markdown-preview-enhanced",
+				"ms-kubernetes-tools.vscode-kubernetes-tools"
+			]
+		}
+	},
+	"postCreateCommand": "curl -fsSL https://bun.sh/install | bash"
+}

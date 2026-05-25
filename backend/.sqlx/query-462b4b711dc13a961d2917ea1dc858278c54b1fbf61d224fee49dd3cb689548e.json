@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT k3s_token FROM clusters WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "k3s_token",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "char_set": 224,
+          "max_size": 2048
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "462b4b711dc13a961d2917ea1dc858278c54b1fbf61d224fee49dd3cb689548e"
+}

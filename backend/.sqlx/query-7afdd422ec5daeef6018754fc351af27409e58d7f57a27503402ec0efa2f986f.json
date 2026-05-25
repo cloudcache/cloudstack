@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT host_path FROM app_managed_volumes WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "host_path",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 2048
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7afdd422ec5daeef6018754fc351af27409e58d7f57a27503402ec0efa2f986f"
+}

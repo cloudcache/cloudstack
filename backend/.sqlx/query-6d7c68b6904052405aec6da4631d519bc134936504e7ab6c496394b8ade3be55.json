@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE projects SET\n             quota_cpu_mcores      = 0,\n             quota_mem_mb          = 0,\n             quota_storage_gb      = 0,\n             quota_bandwidth_gb    = 0,\n             quota_domain_count    = 0,\n             quota_db_instances    = 0,\n             quota_apps            = 0,\n             quota_request_million = 0\n           WHERE owner_id = ? AND is_default = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "6d7c68b6904052405aec6da4631d519bc134936504e7ab6c496394b8ade3be55"
+}

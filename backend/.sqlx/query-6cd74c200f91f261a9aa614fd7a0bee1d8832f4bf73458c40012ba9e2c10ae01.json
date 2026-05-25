@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM app_managed_volumes WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "6cd74c200f91f261a9aa614fd7a0bee1d8832f4bf73458c40012ba9e2c10ae01"
+}

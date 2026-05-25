@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM app_file_mounts WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "167bae56d4552b75c0dcbce860d7a951dd878d232296a8ac210ffc2fbe9bb2c1"
+}

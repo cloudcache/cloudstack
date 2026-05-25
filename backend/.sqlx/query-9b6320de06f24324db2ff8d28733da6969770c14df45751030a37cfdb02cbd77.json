@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT COUNT(*) FROM users\n           WHERE (? IS NULL OR username LIKE ? OR email LIKE ? OR display_name LIKE ?)\n             AND (? IS NULL OR is_active = ?)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "COUNT(*)",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 21
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9b6320de06f24324db2ff8d28733da6969770c14df45751030a37cfdb02cbd77"
+}

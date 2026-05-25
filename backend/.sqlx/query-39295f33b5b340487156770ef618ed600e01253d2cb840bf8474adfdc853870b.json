@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT nodeport FROM app_ports WHERE app_id = ? AND container_port = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "nodeport",
+        "type_info": {
+          "type": "Short",
+          "flags": "UNIQUE_KEY | UNSIGNED",
+          "char_set": 63,
+          "max_size": 5
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "39295f33b5b340487156770ef618ed600e01253d2cb840bf8474adfdc853870b"
+}

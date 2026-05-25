@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO project_members (project_id, user_id, role, added_by)\n               VALUES (?, ?, 'ADMIN', ?)\n               ON DUPLICATE KEY UPDATE role = 'ADMIN'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "d6634cc1e06e48a829e541bba755c48474071f69f2b3b6ef9185e27306f91ebc"
+}

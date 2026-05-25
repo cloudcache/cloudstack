@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT COUNT(*) FROM user_subscriptions s\n           WHERE (? IS NULL OR s.user_id = ?)\n             AND (? IS NULL OR s.plan_id = ?)\n             AND (? IS NULL OR s.status  = ?)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "COUNT(*)",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 21
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d47b8cc5fb295e45786dae839e82026a84067360c96c8e91bbd6faded3fe487c"
+}

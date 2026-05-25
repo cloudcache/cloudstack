@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT secret FROM totp_credentials WHERE user_id = ? AND enabled = 0",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "secret",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 2048
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5ac74c7482e4c41a1757d900c8f7cdf8229ef080b9780dbffb6568b511118d0c"
+}

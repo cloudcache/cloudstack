@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT IGNORE INTO usage_snapshots\n                 (id, user_id, snapshot_time,\n                  app_count, db_count, cpu_mcores_used, mem_mb_used, storage_gb_used, cost)\n               VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "f118c158d0da187aeab12b971aeb300b99980e210f2e3edd85dde35327c081af"
+}

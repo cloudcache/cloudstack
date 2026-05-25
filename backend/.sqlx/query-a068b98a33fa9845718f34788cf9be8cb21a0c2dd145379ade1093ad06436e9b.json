@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT c.id\n           FROM clusters c\n           JOIN apps a ON a.pool_id = c.pool_id\n           WHERE a.id = ? AND c.is_active = 1\n           ORDER BY c.created_at LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | PRIMARY_KEY | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 144
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a068b98a33fa9845718f34788cf9be8cb21a0c2dd145379ade1093ad06436e9b"
+}

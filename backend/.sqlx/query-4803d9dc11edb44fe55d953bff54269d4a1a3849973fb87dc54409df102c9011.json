@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT IGNORE INTO overdue_charges\n                 (id, user_id, charge_date, overdue_balance, fee_pct, fee_amount, status)\n               VALUES (?, ?, ?, ?, ?, ?, 'PENDING')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "4803d9dc11edb44fe55d953bff54269d4a1a3849973fb87dc54409df102c9011"
+}

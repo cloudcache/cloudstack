@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)\n           ON DUPLICATE KEY UPDATE balance = balance + VALUES(balance)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6870c46ae0ce36b370e14bee9c609a8bc4950ef564bd801f4cbb81b25f897bfc"
+}

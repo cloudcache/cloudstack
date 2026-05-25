@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO app_file_mounts (id, app_id, filename, mount_path, content)\n           VALUES (?, ?, ?, ?, ?)\n           ON DUPLICATE KEY UPDATE content = ?, mount_path = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "7f71011d42be8150edcf351e5589e0af746ecdd9c00d417a81adaaaaa9afd1a2"
+}

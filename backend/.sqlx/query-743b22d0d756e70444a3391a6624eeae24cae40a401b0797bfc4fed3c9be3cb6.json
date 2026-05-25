@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT is_active FROM clusters WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_active",
+        "type_info": {
+          "type": "Tiny",
+          "flags": "NOT_NULL",
+          "char_set": 63,
+          "max_size": 1
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "743b22d0d756e70444a3391a6624eeae24cae40a401b0797bfc4fed3c9be3cb6"
+}

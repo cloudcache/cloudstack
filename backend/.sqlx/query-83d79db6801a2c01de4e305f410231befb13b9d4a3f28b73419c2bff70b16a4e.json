@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO image_registries (id, name, endpoint, username, password, is_default, priority)\n           VALUES (?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "83d79db6801a2c01de4e305f410231befb13b9d4a3f28b73419c2bff70b16a4e"
+}

@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT app_id FROM app_domains WHERE hostname = ? LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "app_id",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | MULTIPLE_KEY | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 144
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6e7db91401e3ad77e6c3860965bbacffcd503e9e71a82cf93be677a982b72b63"
+}

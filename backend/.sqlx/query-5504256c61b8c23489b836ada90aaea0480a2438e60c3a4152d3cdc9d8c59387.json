@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE subscription_plans SET\n             display_name             = COALESCE(?, display_name),\n             description              = COALESCE(?, description),\n             price_monthly            = COALESCE(?, price_monthly),\n             price_annually           = COALESCE(?, price_annually),\n             quota_cpu_mcores         = COALESCE(?, quota_cpu_mcores),\n             quota_mem_mb             = COALESCE(?, quota_mem_mb),\n             quota_storage_gb         = COALESCE(?, quota_storage_gb),\n             quota_bandwidth_gb       = COALESCE(?, quota_bandwidth_gb),\n             quota_domain_count       = COALESCE(?, quota_domain_count),\n             quota_db_instance_count  = COALESCE(?, quota_db_instance_count),\n             quota_project_count      = COALESCE(?, quota_project_count),\n             quota_app_count          = COALESCE(?, quota_app_count),\n             quota_request_million    = COALESCE(?, quota_request_million),\n             is_active                = COALESCE(?, is_active),\n             is_public                = COALESCE(?, is_public),\n             sort_order               = COALESCE(?, sort_order)\n           WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 17
+    },
+    "nullable": []
+  },
+  "hash": "5504256c61b8c23489b836ada90aaea0480a2438e60c3a4152d3cdc9d8c59387"
+}

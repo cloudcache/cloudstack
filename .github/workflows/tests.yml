@@ -1,0 +1,32 @@
+name: Run Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+env:
+  # dummy database url for build time --> prisma
+  DATABASE_URL: file:./dev.db
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies for backend
+        run: yarn install && yarn run prisma-generate
+
+      - name: Run tests for backend
+        run: yarn  test

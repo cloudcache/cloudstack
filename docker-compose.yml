@@ -1,0 +1,115 @@
+version: "3.8"
+
+services:
+  # ── MySQL ─────────────────────────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-quickstack}
+      MYSQL_DATABASE: quickstack
+      MYSQL_USER: quickstack
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-quickstack}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-quickstack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── LLDAP (auth) ──────────────────────────────────────────────────────────────
+  # Uses the same MySQL instance as the backend.
+  # LLDAP creates its own tables (prefixed) in the shared DB.
+  lldap:
+    image: lldap/lldap:latest
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - UID=1000
+      - GID=1000
+      - TZ=UTC
+      - LLDAP_JWT_SECRET=${LLDAP_JWT_SECRET:-change-me-lldap-jwt-secret}
+      # Use MySQL backend instead of default SQLite
+      - LLDAP_DATABASE_URL=mysql://quickstack:${MYSQL_PASSWORD:-quickstack}@mysql:3306/quickstack
+      - LLDAP_LDAP_BASE_DN=${LLDAP_BASE_DN:-dc=quickstack,dc=local}
+      - LLDAP_LDAP_USER_DN=${LLDAP_ADMIN_USERNAME:-admin}
+      - LLDAP_LDAP_USER_PASS=${LLDAP_ADMIN_PASSWORD:-admin}
+    ports:
+      - "3890:3890"   # LDAP
+      - "17170:17170" # Web UI / GraphQL API
+    healthcheck:
+      test: ["CMD", "/app/lldap", "healthcheck", "--url", "http://localhost:17170"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Rust backend ──────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      lldap:
+        condition: service_healthy
+    environment:
+      # Database
+      - DATABASE__URL=mysql://quickstack:${MYSQL_PASSWORD:-quickstack}@mysql:3306/quickstack
+      - DATABASE__MAX_CONNECTIONS=20
+      - DATABASE__MIN_CONNECTIONS=2
+      - DATABASE__CONNECT_TIMEOUT_SECS=10
+      # Server
+      - SERVER__HOST=0.0.0.0
+      - SERVER__PORT=3001
+      # LDAP — points to LLDAP container
+      - LDAP__URL=ldap://lldap:3890
+      - LDAP__BASE_DN=${LLDAP_BASE_DN:-dc=quickstack,dc=local}
+      - LDAP__BIND_DN=cn=${LLDAP_ADMIN_USERNAME:-admin},${LLDAP_BASE_DN:-dc=quickstack,dc=local}
+      - LDAP__BIND_PASSWORD=${LLDAP_ADMIN_PASSWORD:-admin}
+      - LDAP__USER_OU=ou=people
+      - LDAP__GROUP_OU=ou=groups
+      - LDAP__USER_FILTER=(&(objectClass=person)(uid={}))
+      - LDAP__HTTP_URL=http://lldap:17170
+      - LDAP__ADMIN_USERNAME=${LLDAP_ADMIN_USERNAME:-admin}
+      - LDAP__SYNC_INTERVAL_SECS=600
+      - LDAP__CONNECTION_TIMEOUT_SECS=5
+      - LDAP__POOL_SIZE=5
+      # Crypto
+      - QS_ENCRYPTION_KEY=${QS_ENCRYPTION_KEY}
+      # JWT
+      - JWT__EXPIRY_HOURS=24
+      # Storage
+      - STORAGE__ROOT_PATH=/data/storage
+      # Logging
+      - RUST_LOG=info,quickstack=debug
+    ports:
+      - "3001:3001"
+    volumes:
+      - backend_storage:/data/storage
+
+  # ── Next.js frontend ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      - BACKEND_URL=http://backend:3001
+      - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3001}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-change-me-nextauth-secret}
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
+    ports:
+      - "3000:3000"
+
+volumes:
+  mysql_data:
+  backend_storage:

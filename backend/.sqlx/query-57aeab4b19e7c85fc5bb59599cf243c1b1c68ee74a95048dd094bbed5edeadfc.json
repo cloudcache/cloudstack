@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO subscription_plans\n           (id, name, display_name, description,\n            price_monthly, price_annually,\n            quota_cpu_mcores, quota_mem_mb, quota_storage_gb,\n            quota_bandwidth_gb, quota_domain_count, quota_db_instance_count,\n            quota_project_count, quota_app_count, quota_request_million,\n            is_public, sort_order)\n           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 17
+    },
+    "nullable": []
+  },
+  "hash": "57aeab4b19e7c85fc5bb59599cf243c1b1c68ee74a95048dd094bbed5edeadfc"
+}

@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT COUNT(*) FROM projects p\n           WHERE (? IS NULL OR p.name LIKE ? OR p.display_name LIKE ?)\n             AND (? IS NULL OR p.is_active = ?)\n             AND (? IS NULL OR p.owner_id = ?)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "COUNT(*)",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 21
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c8336700c39ab8978514095870ff23897bee8ca4d88404aa92a4193bc4d5f8ed"
+}

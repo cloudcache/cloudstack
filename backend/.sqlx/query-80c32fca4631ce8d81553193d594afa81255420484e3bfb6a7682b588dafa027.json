@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT kubeconfig FROM clusters WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kubeconfig",
+        "type_info": {
+          "type": "Blob",
+          "flags": "BLOB",
+          "char_set": 224,
+          "max_size": 67108860
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "80c32fca4631ce8d81553193d594afa81255420484e3bfb6a7682b588dafa027"
+}

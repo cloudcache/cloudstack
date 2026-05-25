@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE build_jobs SET status = 'SUCCEEDED', finished_at = NOW() WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "fdb6be2947ae847765fcc1c6a0c832b2dd51ab3ef8c666804f6fe003f44219d6"
+}

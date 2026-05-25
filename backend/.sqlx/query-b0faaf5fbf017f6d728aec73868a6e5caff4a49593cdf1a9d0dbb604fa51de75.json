@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE users\n           SET display_name    = COALESCE(?, display_name),\n               email           = COALESCE(?, email),\n               is_active       = COALESCE(?, is_active),\n               is_global_admin = COALESCE(?, is_global_admin)\n           WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "b0faaf5fbf017f6d728aec73868a6e5caff4a49593cdf1a9d0dbb604fa51de75"
+}

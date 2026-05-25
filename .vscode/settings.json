@@ -1,0 +1,17 @@
+{
+  // The path to the `bun` executable.
+  "bun.runtime": "/home/node/.bun/bin/bun",
+  // If support for Bun should be added to the default "JavaScript Debug Terminal".
+  "bun.debugTerminal.enabled": true,
+  // If the debugger should stop on the first line of the program.
+  "bun.debugTerminal.stopOnEntry": false,
+  "java.compile.nullAnalysis.mode": "automatic",
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "files.exclude": {
+    "**/.DS_Store": true,
+  },
+  "search.exclude": {
+  },
+  "files.trimTrailingWhitespace": true,
+  "prettier.singleQuote": true,
+}

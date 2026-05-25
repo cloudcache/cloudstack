@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM app_db_tools WHERE app_id = ? AND tool = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "2a2a101287e75723a82d67445018693d0cee9de40453da230dba935d04cca3f1"
+}

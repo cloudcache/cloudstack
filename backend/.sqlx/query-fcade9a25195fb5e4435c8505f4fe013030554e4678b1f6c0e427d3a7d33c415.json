@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE quota_violations\n           SET resolved_at = NOW()\n           WHERE project_id = ? AND resolved_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "fcade9a25195fb5e4435c8505f4fe013030554e4678b1f6c0e427d3a7d33c415"
+}

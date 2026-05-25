@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO app_volume_backups\n           (id, volume_id, s3_target_id, cron_expr, retention_days, use_db_backup)\n           VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "bc073c50d0a8183b9e25879db5a342ea0bbb85941234be2b5ca2c4ffc1bf1f06"
+}

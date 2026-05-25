@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT pool_id FROM apps WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pool_id",
+        "type_info": {
+          "type": "String",
+          "flags": "MULTIPLE_KEY",
+          "char_set": 224,
+          "max_size": 144
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "5c7bcd7ecd2d18389e3064b4535c1a78ca29be330fae8374cd7582a99b7d454c"
+}

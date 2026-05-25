@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT balance FROM user_wallets WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "balance",
+        "type_info": {
+          "type": "NewDecimal",
+          "flags": "NOT_NULL",
+          "char_set": 63,
+          "max_size": 14
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1d9d3f96847105f585725312de71272537dd56208040158441ce16f9ac9dd83d"
+}

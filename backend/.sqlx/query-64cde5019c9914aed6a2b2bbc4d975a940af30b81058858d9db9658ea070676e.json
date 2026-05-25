@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO app_managed_volumes\n           (id, app_id, name, container_mount_path, host_path, share_with_others, shared_volume_id)\n           VALUES (?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "64cde5019c9914aed6a2b2bbc4d975a940af30b81058858d9db9658ea070676e"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO build_jobs (id, app_id, k8s_job_name, trigger_type, triggered_by)\n           VALUES (?, ?, ?, 'MANUAL', ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "17413019ab0885e3eb905914d5a3f088a46dc22a83096b6e535ec876ad4bf820"
+}

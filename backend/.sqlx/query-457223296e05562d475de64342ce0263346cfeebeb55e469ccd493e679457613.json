@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT project_id FROM apps WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_id",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | MULTIPLE_KEY | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 144
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "457223296e05562d475de64342ce0263346cfeebeb55e469ccd493e679457613"
+}

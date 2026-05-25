@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO ip_pools (id, name, cidr, pool_type, gateway, description)\n           VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "d6da68cba75ec987989ee3ad893eed6781993e091564e2ea08ad7da12c25708b"
+}

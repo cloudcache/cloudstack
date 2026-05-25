@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO quota_violations\n             (id, project_id, app_id, dimension, used_value, quota_value, pct_used, action)\n           VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "68988823d7a543d7cb3a6052966268fe2c2574b12963c748a81454230bc8678b"
+}

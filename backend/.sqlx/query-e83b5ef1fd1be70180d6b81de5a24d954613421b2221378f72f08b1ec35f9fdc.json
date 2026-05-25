@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE database_clusters\n               SET host=?, port=?, admin_user=?,\n                   max_databases=?, description=?, manager_url=?, is_active=?\n               WHERE id=?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "e83b5ef1fd1be70180d6b81de5a24d954613421b2221378f72f08b1ec35f9fdc"
+}

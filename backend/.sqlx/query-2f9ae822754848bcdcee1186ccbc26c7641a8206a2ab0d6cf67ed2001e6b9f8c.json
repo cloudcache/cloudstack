@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE project_members SET role = 'ADMIN' WHERE project_id = ? AND user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "2f9ae822754848bcdcee1186ccbc26c7641a8206a2ab0d6cf67ed2001e6b9f8c"
+}

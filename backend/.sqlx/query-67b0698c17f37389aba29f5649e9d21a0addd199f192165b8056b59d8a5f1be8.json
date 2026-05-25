@@ -1,0 +1,36 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT vpc_pool_id, pub_pool_id FROM clusters\n           WHERE pool_id = ? AND is_active = 1\n           ORDER BY created_at LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vpc_pool_id",
+        "type_info": {
+          "type": "String",
+          "flags": "MULTIPLE_KEY",
+          "char_set": 224,
+          "max_size": 144
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "pub_pool_id",
+        "type_info": {
+          "type": "String",
+          "flags": "MULTIPLE_KEY",
+          "char_set": 224,
+          "max_size": 144
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "67b0698c17f37389aba29f5649e9d21a0addd199f192165b8056b59d8a5f1be8"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE apps SET replicas = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f36e0a5855ea87f16ea5f37e6722cbc5adec9b893b1e2c107fcdaa50aaabccc8"
+}

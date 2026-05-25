@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT status FROM apps WHERE id = ? AND project_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | ENUM",
+          "char_set": 224,
+          "max_size": 36
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e4a6720e147fa78d84d598f8a46ebbabd629022e75b0a99055c16f9cb4f2542e"
+}

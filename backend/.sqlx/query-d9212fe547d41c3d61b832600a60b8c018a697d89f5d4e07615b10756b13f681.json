@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE users SET display_name = COALESCE(?, display_name) WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "d9212fe547d41c3d61b832600a60b8c018a697d89f5d4e07615b10756b13f681"
+}

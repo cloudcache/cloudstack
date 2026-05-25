@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO user_subscriptions\n           (id, user_id, plan_id, status, billing_cycle,\n            started_at, expires_at, auto_renew, price_paid)\n           VALUES (?, ?, ?, 'ACTIVE', ?, NOW(), ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "ccd7f79fa151a5e8b2e0f42f190ab79f71f2ceefe92258c3490ff76057bb3628"
+}

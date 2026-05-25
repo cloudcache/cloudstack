@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO monthly_network_charges\n                 (id, project_id, user_id, billing_month,\n                  p95_egress_mbps, total_egress_bytes, total_ingress_bytes,\n                  mean_req_body_bytes, mean_resp_body_bytes, total_req_count,\n                  egress_charge, status)\n               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')\n               ON DUPLICATE KEY UPDATE\n                 p95_egress_mbps      = VALUES(p95_egress_mbps),\n                 total_egress_bytes   = VALUES(total_egress_bytes),\n                 total_ingress_bytes  = VALUES(total_ingress_bytes),\n                 mean_req_body_bytes  = VALUES(mean_req_body_bytes),\n                 mean_resp_body_bytes = VALUES(mean_resp_body_bytes),\n                 total_req_count      = VALUES(total_req_count),\n                 egress_charge        = VALUES(egress_charge)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "df393d0a0bf51fd3436a9f1cdb615b2240fc73470954626f6fe35393e5e17ee1"
+}

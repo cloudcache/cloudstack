@@ -1,0 +1,64 @@
+[server]
+host = "0.0.0.0"
+port = 3001
+
+[database]
+url = "mysql://root@localhost/quickstack"
+max_connections = 20
+min_connections = 2
+connect_timeout_secs = 10
+
+[ldap]
+url = "ldap://localhost:3890"
+base_dn = "dc=quickstack,dc=local"
+bind_dn = "cn=admin,dc=quickstack,dc=local"
+bind_password = "admin"
+user_ou = "ou=people"
+group_ou = "ou=groups"
+user_filter = "(&(objectClass=person)(uid={}))"
+# LLDAP GraphQL admin API — http://host:17170
+http_url = "http://localhost:17170"
+admin_username = "admin"
+sync_interval_secs = 600
+connection_timeout_secs = 5
+pool_size = 5
+
+[jwt]
+# secret loaded from platform_config.jwt_secret (encrypted) at runtime
+expiry_hours = 24
+
+[crypto]
+# 32-byte base64 key — CHANGE IN PRODUCTION (generate: openssl rand -base64 32)
+key = "cz50htOizQ/sH7Jan9aY6GDpMSPQI3kijYcZClieNuU="
+
+[storage]
+root_path = "/tmp/quickstack-storage"
+
+[registry]
+# populated from platform_config at runtime
+host = ""
+
+[smtp]
+host = ""
+port = 587
+username = ""
+password = ""
+from = ""
+starttls = true
+
+[stripe]
+# Stripe secret key — leave empty to disable Stripe integration entirely.
+# Use sk_test_... for sandbox, sk_live_... for production.
+secret_key = ""
+# Webhook signing secret (whsec_...) — used to verify incoming webhook events.
+# Create in Stripe Dashboard → Developers → Webhooks → Add endpoint.
+# Listen for: checkout.session.completed
+webhook_secret = ""
+# ISO 4217 currency code (lowercase). Must match your Stripe account's settlement currency.
+currency = "cny"
+# Predefined top-up amounts in the smallest currency unit (分 for CNY, cents for USD).
+# Example: [1000, 5000, 10000, 50000] = ¥10, ¥50, ¥100, ¥500
+topup_amounts = [1000, 5000, 10000, 50000]
+# Redirect URLs after Checkout. {session_id} is replaced with the Stripe Checkout session ID.
+success_url = "http://localhost:3000/billing?payment=success&session_id={session_id}"
+cancel_url = "http://localhost:3000/billing?payment=cancelled"

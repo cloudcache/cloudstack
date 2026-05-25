@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE clusters\n           SET display_name=?, description=?, is_active=?,\n               vpc_pool_id=?, pub_pool_id=?, node_main_iface=?\n           WHERE id=?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "4b297d7cb5ae07f90a9773515e8b02ec1bc2fab0bd769fb248807b2851492d5c"
+}

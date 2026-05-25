@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT COUNT(*) FROM apps a\n           JOIN projects p ON p.id = a.project_id\n           JOIN project_members pm ON pm.project_id = p.id\n           WHERE pm.user_id = ? AND a.status != 'STOPPED'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "COUNT(*)",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 21
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a2e52e9f3812bc44e5e0a4b5bf0672369efb89200a0933310092f67511787baa"
+}

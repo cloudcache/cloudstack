@@ -1,0 +1,47 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT s.status, p.display_name AS plan_display_name, s.expires_at\n           FROM user_subscriptions s\n           JOIN subscription_plans p ON p.id = s.plan_id\n           WHERE s.user_id = ? ORDER BY s.created_at DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | MULTIPLE_KEY | ENUM",
+          "char_set": 224,
+          "max_size": 36
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "plan_display_name",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 512
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "expires_at",
+        "type_info": {
+          "type": "Datetime",
+          "flags": "BINARY",
+          "char_set": 63,
+          "max_size": 19
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "f728593a8088274cd98f669f8f6cf6b4ca7fc9637b769659d785b2a170efca51"
+}

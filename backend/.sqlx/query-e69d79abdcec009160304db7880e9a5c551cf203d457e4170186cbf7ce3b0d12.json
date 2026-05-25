@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST(balance AS DOUBLE) AS balance\n           FROM user_wallets WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "balance",
+        "type_info": {
+          "type": "Double",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 23
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e69d79abdcec009160304db7880e9a5c551cf203d457e4170186cbf7ce3b0d12"
+}

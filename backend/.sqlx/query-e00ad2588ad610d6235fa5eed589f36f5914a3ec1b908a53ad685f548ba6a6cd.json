@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT ip_address FROM ip_allocations WHERE pool_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ip_address",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 256
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e00ad2588ad610d6235fa5eed589f36f5914a3ec1b908a53ad685f548ba6a6cd"
+}

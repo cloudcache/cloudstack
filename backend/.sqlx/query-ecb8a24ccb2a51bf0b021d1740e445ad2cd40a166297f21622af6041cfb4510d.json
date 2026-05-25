@@ -1,0 +1,58 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT owner_id AS user_id,\n                  COUNT(*)                                             AS app_count,\n                  COALESCE(SUM(cpu_reservation_mcores * replicas), 0) AS cpu_mcores,\n                  COALESCE(SUM(mem_reservation_mb     * replicas), 0) AS mem_mb\n           FROM apps\n           WHERE status = 'RUNNING'\n           GROUP BY owner_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | MULTIPLE_KEY | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 144
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "app_count",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 21
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "cpu_mcores",
+        "type_info": {
+          "type": "NewDecimal",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 36
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "mem_mb",
+        "type_info": {
+          "type": "NewDecimal",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 36
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ecb8a24ccb2a51bf0b021d1740e445ad2cd40a166297f21622af6041cfb4510d"
+}

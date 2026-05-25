@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM subscription_plans WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "2a17a012df80d58d56fd2b9c37bfdbec420efdcdb0ad420beab34916c1046d87"
+}

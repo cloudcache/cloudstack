@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT COALESCE(SUM(cost), 0) FROM usage_snapshots\n           WHERE user_id = ? AND snapshot_time >= DATE_FORMAT(NOW(), '%Y-%m-01')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "COALESCE(SUM(cost), 0)",
+        "type_info": {
+          "type": "NewDecimal",
+          "flags": "NOT_NULL | BINARY",
+          "char_set": 63,
+          "max_size": 34
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b7568daa64d06c98df49e03dcd02858f9118b2a9fa1070c9bafbff88eb3e409a"
+}

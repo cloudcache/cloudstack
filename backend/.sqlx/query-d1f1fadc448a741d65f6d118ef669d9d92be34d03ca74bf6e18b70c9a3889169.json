@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO user_wallets (user_id, balance, currency)\n                   VALUES (?, -?, 'CNY')\n                   ON DUPLICATE KEY UPDATE balance = balance - ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "d1f1fadc448a741d65f6d118ef669d9d92be34d03ca74bf6e18b70c9a3889169"
+}

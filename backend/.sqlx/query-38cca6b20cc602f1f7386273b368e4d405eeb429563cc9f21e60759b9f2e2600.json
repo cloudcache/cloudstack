@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT quota_apps FROM projects WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "quota_apps",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | UNSIGNED",
+          "char_set": 63,
+          "max_size": 10
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "38cca6b20cc602f1f7386273b368e4d405eeb429563cc9f21e60759b9f2e2600"
+}

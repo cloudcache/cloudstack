@@ -1,0 +1,105 @@
+[package]
+name = "quickstack"
+version = "0.1.0"
+edition = "2021"
+authors = ["QuickStack"]
+description = "QuickStack PaaS Backend"
+
+[[bin]]
+name = "quickstack"
+path = "src/main.rs"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["ws", "macros"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7" }
+hyper = { version = "1", features = ["full"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "mysql", "uuid", "chrono", "json", "migrate", "rust_decimal"] }
+
+# Kubernetes
+kube = { version = "0.90", features = ["runtime", "ws", "rustls-tls"] }
+k8s-openapi = { version = "0.21", features = ["v1_29"] }
+
+# LDAP
+ldap3 = { version = "0.11", default-features = false, features = ["tls-rustls"] }
+
+# SSH
+russh = "0.44"
+russh-keys = "0.44"
+
+# Crypto
+aes-gcm = "0.10"
+argon2 = "0.5"
+sha2 = "0.10"
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
+base64 = "0.22"
+hex = "0.4"
+
+# TOTP
+totp-rs = { version = "5", features = ["qr", "gen_secret"] }
+
+# JWT
+jsonwebtoken = "9"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# HTTP client (for pingora API + LLDAP admin API)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Email
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+
+# Config
+config = "0.14"
+toml = "0.8"
+
+# Async utilities
+futures = "0.3"
+async-stream = "0.3"
+async-trait = "0.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Stripe payments
+async-stripe = { version = "0.41", features = ["runtime-tokio-hyper", "checkout", "webhook-events"] }
+
+# Decimal arithmetic (for billing amounts)
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Validation
+validator = { version = "0.18", features = ["derive"] }
+
+# Regex
+regex = "1"
+once_cell = "1"
+
+# Process
+nix = { version = "0.29", features = ["process", "signal"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO cluster_nodes (id, cluster_id, hostname, ip_address, node_role, storage_path)\n           VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "169f3376d985ee79d751c43448a2f3ae1e26b07f91ef037cb9ba4e25ea77d12a"
+}

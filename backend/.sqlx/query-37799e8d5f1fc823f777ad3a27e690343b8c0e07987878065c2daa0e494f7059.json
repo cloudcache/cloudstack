@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO wallet_transactions\n               (id, user_id, tx_type, amount, balance_after, description, ref_id)\n               VALUES (?, ?, 'DEDUCTION', ?, ?, ?, NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "37799e8d5f1fc823f777ad3a27e690343b8c0e07987878065c2daa0e494f7059"
+}

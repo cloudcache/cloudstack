@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO platform_config (`key`, `value`) VALUES ('storage_root', ?)\n           ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "04bb457912ad46840280f6cca9c64b142d737696abd04f3c30a052ad05d16483"
+}

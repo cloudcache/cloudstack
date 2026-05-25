@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE apps\n               SET status = 'SUSPENDED',\n                   paused_at = NOW(),\n                   paused_by = 'system',\n                   pause_reason = ?\n               WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "8e67496ff46ae572fd80be81557b7199899b2d4ec5ea519ba7b9bfb9d19c7f45"
+}
