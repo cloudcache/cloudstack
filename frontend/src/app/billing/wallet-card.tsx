@@ -1,0 +1,127 @@
+'use client'
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { AlertTriangle, CreditCard, Cpu, Database, TrendingUp } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import TopupButton from "./topup-button";
+import { useT } from "@/i18n";
+
+interface WalletCardProps {
+    balance: number;
+    currency: string;
+    isOverdue: boolean;
+    mtdCost: number;
+    activeApps: number;
+    activeDatabases: number;
+    lastSnapshot?: {
+        time: string;
+        cpu_mcores: number;
+        mem_mb: number;
+        storage_gb: number;
+        hourly_cost: number;
+    } | null;
+    stripeEnabled: boolean;
+    stripeCurrency: string;
+    topupAmounts: number[];
+}
+
+type SupportedCurrency = 'CNY' | 'USD';
+
+function normalizeCurrency(c: string): SupportedCurrency {
+    const upper = c.toUpperCase();
+    return upper === 'USD' ? 'USD' : 'CNY';
+}
+
+function formatAmount(amount: number, currency: string) {
+    const cur = normalizeCurrency(currency);
+    const locale = cur === 'CNY' ? 'zh-CN' : 'en-US';
+    return new Intl.NumberFormat(locale, { style: 'currency', currency: cur }).format(amount);
+}
+
+export default function WalletCard({
+    balance, currency, isOverdue, mtdCost, activeApps, activeDatabases, lastSnapshot,
+    stripeEnabled, stripeCurrency, topupAmounts,
+}: WalletCardProps) {
+    const t = useT();
+    return (
+        <div className="space-y-4">
+            {isOverdue && (
+                <Alert variant="destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertDescription>
+                        {t('page.billing.overdueWarning')}
+                    </AlertDescription>
+                </Alert>
+            )}
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium">{t("page.billing.walletBalance")}</CardTitle>
+                        <CreditCard className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                        <div className={`text-2xl font-bold ${balance < 0 ? 'text-red-500' : ''}`}>
+                            {formatAmount(balance, currency)}
+                        </div>
+                        <div className="flex items-center gap-2 mt-2">
+                            {isOverdue && (
+                                <Badge variant="destructive">{t('page.billing.overdue')}</Badge>
+                            )}
+                            <TopupButton
+                                enabled={stripeEnabled}
+                                currency={stripeCurrency}
+                                presetAmounts={topupAmounts}
+                            />
+                        </div>
+                    </CardContent>
+                </Card>
+
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium">{t("page.billing.monthCost")}</CardTitle>
+                        <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-2xl font-bold">{formatAmount(mtdCost, currency)}</div>
+                        {lastSnapshot && (
+                            <p className="text-xs text-muted-foreground mt-1">
+                                {formatAmount(lastSnapshot.hourly_cost, currency)}/hr
+                            </p>
+                        )}
+                    </CardContent>
+                </Card>
+
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium">{t("page.billing.activeApps")}</CardTitle>
+                        <Cpu className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-2xl font-bold">{activeApps}</div>
+                        {lastSnapshot && (
+                            <p className="text-xs text-muted-foreground mt-1">
+                                {lastSnapshot.cpu_mcores}m CPU · {lastSnapshot.mem_mb} MB RAM
+                            </p>
+                        )}
+                    </CardContent>
+                </Card>
+
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium">{t("page.billing.activeDatabases")}</CardTitle>
+                        <Database className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-2xl font-bold">{activeDatabases}</div>
+                        {lastSnapshot && (
+                            <p className="text-xs text-muted-foreground mt-1">
+                                {lastSnapshot.storage_gb} GB storage
+                            </p>
+                        )}
+                    </CardContent>
+                </Card>
+            </div>
+        </div>
+    );
+}

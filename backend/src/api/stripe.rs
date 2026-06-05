@@ -7,7 +7,6 @@
 ///   4. Webhook handler credits the user's wallet and records the transaction
 ///
 /// All amounts are in the currency's smallest unit (分 for CNY, cents for USD).
-
 use axum::{
     body::Bytes,
     extract::State,
@@ -17,11 +16,9 @@ use axum::{
 };
 use serde::Deserialize;
 use stripe::{
-    CheckoutSession, CheckoutSessionMode, Client as StripeClient,
-    CreateCheckoutSession, CreateCheckoutSessionLineItems,
-    CreateCheckoutSessionLineItemsPriceData,
-    CreateCheckoutSessionLineItemsPriceDataProductData,
-    Currency, EventObject, EventType, Webhook,
+    CheckoutSession, CheckoutSessionMode, Client as StripeClient, CreateCheckoutSession,
+    CreateCheckoutSessionLineItems, CreateCheckoutSessionLineItemsPriceData,
+    CreateCheckoutSessionLineItemsPriceDataProductData, Currency, EventObject, EventType, Webhook,
 };
 use uuid::Uuid;
 
@@ -35,32 +32,28 @@ use crate::{
 
 fn require_stripe(state: &AppState) -> AppResult<StripeClient> {
     if !state.config.stripe.is_enabled() {
-        return Err(AppError::BadRequest("stripe payments are not configured".into()));
+        return Err(AppError::BadRequest(
+            "stripe payments are not configured".into(),
+        ));
     }
     Ok(StripeClient::new(&state.config.stripe.secret_key))
 }
 
-fn parse_currency(s: &str) -> Currency {
+fn parse_currency(s: &str) -> Result<Currency, AppError> {
     match s.to_lowercase().as_str() {
-        "usd" => Currency::USD,
-        "eur" => Currency::EUR,
-        "gbp" => Currency::GBP,
-        "jpy" => Currency::JPY,
-        "cny" => Currency::CNY,
-        "hkd" => Currency::HKD,
-        "sgd" => Currency::SGD,
-        "cad" => Currency::CAD,
-        "aud" => Currency::AUD,
-        _ => Currency::USD,
+        "cny" => Ok(Currency::CNY),
+        "usd" => Ok(Currency::USD),
+        _ => Err(AppError::BadRequest(format!(
+            "Unsupported currency '{}'. Only CNY and USD are accepted.",
+            s
+        ))),
     }
 }
 
 // ─── GET /api/v1/billing/topup/config ────────────────────────────────────────
 
 /// Returns Stripe-related client config (no secrets).
-pub async fn topup_config(
-    State(state): State<AppState>,
-) -> AppResult<impl IntoResponse> {
+pub async fn topup_config(State(state): State<AppState>) -> AppResult<impl IntoResponse> {
     Ok(Json(serde_json::json!({
         "enabled": state.config.stripe.is_enabled(),
         "currency": state.config.stripe.currency,
@@ -89,13 +82,18 @@ pub async fn create_topup(
     }
 
     let cfg = &state.config.stripe;
-    let currency = parse_currency(&cfg.currency);
+    let currency = parse_currency(&cfg.currency)?;
 
     // Format display amount (divide by 100 for most currencies)
     let display_amount = body.amount as f64 / 100.0;
-    let product_name = format!("Wallet Top-up ({:.2} {})", display_amount, cfg.currency.to_uppercase());
+    let product_name = format!(
+        "Wallet Top-up ({:.2} {})",
+        display_amount,
+        cfg.currency.to_uppercase()
+    );
 
-    let success_url = cfg.success_url
+    let success_url = cfg
+        .success_url
         .replace("{session_id}", "{CHECKOUT_SESSION_ID}");
     let cancel_url = cfg.cancel_url.clone();
 
@@ -118,17 +116,21 @@ pub async fn create_topup(
         }),
         ..Default::default()
     }]);
-    params.metadata = Some([
-        ("user_id".to_string(), auth.user_id.clone()),
-        ("purpose".to_string(), "wallet_topup".to_string()),
-    ].into());
+    params.metadata = Some(
+        [
+            ("user_id".to_string(), auth.user_id.clone()),
+            ("purpose".to_string(), "wallet_topup".to_string()),
+        ]
+        .into(),
+    );
 
     let session = CheckoutSession::create(&client, params)
         .await
         .map_err(|e| AppError::Internal(format!("stripe: {e}")))?;
 
     let session_id = session.id.to_string();
-    let checkout_url = session.url
+    let checkout_url = session
+        .url
         .ok_or_else(|| AppError::Internal("stripe: no checkout URL returned".into()))?;
 
     // Record pending payment
@@ -172,15 +174,21 @@ pub async fn topup_history(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(rows.iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "session_id": r.stripe_session_id,
-        "amount": r.amount,
-        "currency": r.currency,
-        "status": r.status,
-        "created_at": r.created_at,
-        "completed_at": r.completed_at,
-    })).collect::<Vec<_>>()))
+    Ok(Json(
+        rows.iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "session_id": r.stripe_session_id,
+                    "amount": r.amount,
+                    "currency": r.currency,
+                    "status": r.status,
+                    "created_at": r.created_at,
+                    "completed_at": r.completed_at,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 // ─── POST /stripe/webhook ────────────────────────────────────────────────────
@@ -222,10 +230,7 @@ pub async fn stripe_webhook(
     Ok(StatusCode::OK)
 }
 
-async fn handle_checkout_completed(
-    state: &AppState,
-    session: &CheckoutSession,
-) -> AppResult<()> {
+async fn handle_checkout_completed(state: &AppState, session: &CheckoutSession) -> AppResult<()> {
     let session_id = session.id.to_string();
 
     // Find our pending payment record
@@ -248,12 +253,16 @@ async fn handle_checkout_completed(
         return Ok(());
     }
 
-    let payment_intent = session.payment_intent
+    let payment_intent = session
+        .payment_intent
         .as_ref()
         .map(|pi| pi.id().to_string());
 
     // Convert smallest-unit amount to decimal (e.g. 1000分 → 10.00)
     let decimal_amount = rust_decimal::Decimal::new(payment.amount, 2);
+
+    // Atomic: wallet credit + transaction log + payment record update
+    let mut db_tx = state.db.begin().await?;
 
     // Credit wallet
     sqlx::query!(
@@ -262,14 +271,14 @@ async fn handle_checkout_completed(
         payment.user_id,
         decimal_amount,
     )
-    .execute(&state.db)
+    .execute(&mut *db_tx)
     .await?;
 
     let new_balance = sqlx::query_scalar!(
         r#"SELECT balance FROM user_wallets WHERE user_id = ?"#,
         payment.user_id,
     )
-    .fetch_one(&state.db)
+    .fetch_one(&mut *db_tx)
     .await?;
 
     // Record wallet transaction
@@ -284,7 +293,7 @@ async fn handle_checkout_completed(
         new_balance,
         payment.id,
     )
-    .execute(&state.db)
+    .execute(&mut *db_tx)
     .await?;
 
     // Update payment record
@@ -299,8 +308,10 @@ async fn handle_checkout_completed(
         tx_id,
         payment.id,
     )
-    .execute(&state.db)
+    .execute(&mut *db_tx)
     .await?;
+
+    db_tx.commit().await?;
 
     tracing::info!(
         user_id = %payment.user_id,

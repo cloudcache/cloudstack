@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Define the directory to search in
-const DIRECTORY = './src/shared/model/generated-zod/';
+const DIRECTORY = './frontend/src/shared/model/generated-zod/';
 
 // Define the string to search for and the replacement string
 const SEARCH_STRING = 'import * as imports from "../../../../prisma/null"';

@@ -31,24 +31,36 @@ pub async fn list(
     .fetch_all(&state.db)
     .await?;
 
-    let apps: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": r.id,
-                "name": r.name,
-                "display_name": r.display_name,
-                "source_type": r.source_type,
-                "status": r.status,
-                "replicas": r.replicas,
-                "cpu_limit_mcores": r.cpu_limit_mcores,
-                "mem_limit_mb": r.mem_limit_mb,
-                "gpu_enabled": r.gpu_enabled != 0,
-                "gpu_count": r.gpu_count,
-                "created_at": r.created_at,
-            })
-        })
-        .collect();
+    let mut apps: Vec<serde_json::Value> = Vec::with_capacity(rows.len());
+    for r in rows {
+        // Fetch domains and ports per app for the project overview / network graph
+        let domains = sqlx::query!(
+            r#"SELECT id, hostname, ssl_enabled FROM app_domains WHERE app_id = ?"#, r.id
+        ).fetch_all(&state.db).await?;
+        let ports = sqlx::query!(
+            r#"SELECT id, container_port, protocol FROM app_ports WHERE app_id = ?"#, r.id
+        ).fetch_all(&state.db).await?;
+
+        apps.push(serde_json::json!({
+            "id": r.id,
+            "name": r.name,
+            "display_name": r.display_name,
+            "source_type": r.source_type,
+            "status": r.status,
+            "replicas": r.replicas,
+            "cpu_limit_mcores": r.cpu_limit_mcores,
+            "mem_limit_mb": r.mem_limit_mb,
+            "gpu_enabled": r.gpu_enabled != 0,
+            "gpu_count": r.gpu_count,
+            "created_at": r.created_at,
+            "app_domains": domains.iter().map(|d| serde_json::json!({
+                "id": d.id, "hostname": d.hostname, "ssl_enabled": d.ssl_enabled != 0,
+            })).collect::<Vec<_>>(),
+            "app_ports": ports.iter().map(|p| serde_json::json!({
+                "id": p.id, "port": p.container_port, "protocol": p.protocol,
+            })).collect::<Vec<_>>(),
+        }));
+    }
 
     Ok(Json(apps))
 }
@@ -71,13 +83,10 @@ pub async fn get_by_id(
     Path(app_id): Path<String>,
 ) -> AppResult<impl IntoResponse> {
     // Resolve project_id from DB first
-    let project_id = sqlx::query_scalar!(
-        r#"SELECT project_id FROM apps WHERE id = ?"#,
-        app_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("app {app_id}")))?;
+    let project_id = sqlx::query_scalar!(r#"SELECT project_id FROM apps WHERE id = ?"#, app_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("app {app_id}")))?;
 
     super::projects::check_project_access(&state, &auth, &project_id, "OBSERVER").await?;
 
@@ -86,13 +95,10 @@ pub async fn get_by_id(
     // Attach project_id, project_name and app_domains to the response
     app["project_id"] = serde_json::json!(project_id);
 
-    let project_name = sqlx::query_scalar!(
-        r#"SELECT name FROM projects WHERE id = ?"#,
-        project_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .unwrap_or_default();
+    let project_name = sqlx::query_scalar!(r#"SELECT name FROM projects WHERE id = ?"#, project_id)
+        .fetch_optional(&state.db)
+        .await?
+        .unwrap_or_default();
     app["project_name"] = serde_json::json!(project_name);
 
     let domain_rows = sqlx::query!(
@@ -102,10 +108,48 @@ pub async fn get_by_id(
     .fetch_all(&state.db)
     .await?;
 
-    app["app_domains"] = serde_json::json!(domain_rows.iter().map(|d| serde_json::json!({
-        "id": d.id,
-        "hostname": d.hostname,
-        "ssl_enabled": d.ssl_enabled != 0,
+    app["app_domains"] = serde_json::json!(domain_rows
+        .iter()
+        .map(|d| serde_json::json!({
+            "id": d.id,
+            "hostname": d.hostname,
+            "ssl_enabled": d.ssl_enabled != 0,
+        }))
+        .collect::<Vec<_>>());
+
+    // Include related collections needed by the frontend
+    let port_rows = sqlx::query!(
+        r#"SELECT id, container_port, protocol, nodeport FROM app_ports WHERE app_id = ?"#,
+        app_id
+    ).fetch_all(&state.db).await?;
+    app["app_ports"] = serde_json::json!(port_rows.iter().map(|p| serde_json::json!({
+        "id": p.id, "port": p.container_port, "protocol": p.protocol, "nodeport": p.nodeport,
+    })).collect::<Vec<_>>());
+
+    let volume_rows = sqlx::query!(
+        r#"SELECT id, name, container_mount_path, host_path, share_with_others, shared_volume_id
+           FROM app_managed_volumes WHERE app_id = ?"#,
+        app_id
+    ).fetch_all(&state.db).await?;
+    app["app_volumes"] = serde_json::json!(volume_rows.iter().map(|v| serde_json::json!({
+        "id": v.id, "name": v.name, "mountPath": v.container_mount_path, "hostPath": v.host_path,
+        "shareWithOthers": v.share_with_others != 0, "sharedVolumeId": v.shared_volume_id,
+    })).collect::<Vec<_>>());
+
+    let fm_rows = sqlx::query!(
+        r#"SELECT id, filename, mount_path FROM app_file_mounts WHERE app_id = ? ORDER BY mount_path, filename"#,
+        app_id
+    ).fetch_all(&state.db).await?;
+    app["app_file_mounts"] = serde_json::json!(fm_rows.iter().map(|f| serde_json::json!({
+        "id": f.id, "filename": f.filename, "mountPath": f.mount_path,
+    })).collect::<Vec<_>>());
+
+    let ba_rows = sqlx::query!(
+        r#"SELECT id, username FROM app_basic_auth WHERE app_id = ?"#,
+        app_id
+    ).fetch_all(&state.db).await?;
+    app["app_basic_auths"] = serde_json::json!(ba_rows.iter().map(|b| serde_json::json!({
+        "id": b.id, "username": b.username,
     })).collect::<Vec<_>>());
 
     Ok(Json(app))
@@ -174,10 +218,7 @@ pub struct CreateAppRequest {
     pub health_check_timeout: Option<u16>,
     pub health_check_failures: Option<u8>,
 
-    // Network
-    pub network_policy: Option<String>,
-
-    // App type + fine-grained network policy
+    // App type + network policy
     pub app_type: Option<String>,
     pub use_network_policy: Option<bool>,
     pub ingress_network_policy: Option<String>,
@@ -223,20 +264,28 @@ pub async fn create(
         .map(|t| state.crypto.encrypt(t))
         .transpose()?;
 
-    let container_args_json = body.container_args.as_ref()
+    let container_args_json = body
+        .container_args
+        .as_ref()
         .map(|v| serde_json::to_string(v))
         .transpose()
         .map_err(|e| AppError::BadRequest(format!("invalid container_args: {e}")))?;
 
     let id = Uuid::new_v4().to_string();
     let webhook_id = Uuid::new_v4().to_string();
+    let resolved_pool_id = match body.pool_id.as_deref() {
+        Some(pool_id) => Some(pool_id.to_string()),
+        None => default_active_pool_id(&state).await?,
+    };
 
     let health_check_type = body.health_check_type.as_deref().unwrap_or("NONE");
     let health_check_scheme = body.health_check_scheme.as_deref().unwrap_or("HTTP");
-    let network_policy = body.network_policy.as_deref().unwrap_or("ALLOW_ALL");
     let app_type = body.app_type.as_deref().unwrap_or("APP");
-    let ingress_network_policy = body.ingress_network_policy.as_deref().unwrap_or("ALLOW_ALL");
-    let egress_network_policy  = body.egress_network_policy.as_deref().unwrap_or("ALLOW_ALL");
+    let ingress_network_policy = body
+        .ingress_network_policy
+        .as_deref()
+        .unwrap_or("ALLOW_ALL");
+    let egress_network_policy = body.egress_network_policy.as_deref().unwrap_or("ALLOW_ALL");
 
     sqlx::query!(
         r#"INSERT INTO apps
@@ -253,14 +302,26 @@ pub async fn create(
             anti_affinity_enabled,
             health_check_type, health_check_path, health_check_port,
             health_check_scheme, health_check_period, health_check_timeout, health_check_failures,
-            network_policy, webhook_id,
+            webhook_id,
             app_type, use_network_policy, ingress_network_policy, egress_network_policy)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+           VALUES (?, ?, ?, ?, ?, ?, ?,
+                   ?, ?, ?,
+                   ?, ?, ?, ?,
+                   ?, ?, ?,
+                   ?, ?, ?,
+                   ?, ?,
+                   ?, ?, ?,
+                   ?, ?,
+                   ?, ?, ?,
+                   ?, ?, ?, ?, ?,
+                   ?,
+                   ?, ?, ?,
+                   ?, ?, ?, ?,
+                   ?,
                    ?, ?, ?, ?)"#,
         id,
         project_id,
-        body.pool_id,
+        resolved_pool_id,
         body.name,
         body.display_name,
         auth.user_id,
@@ -301,7 +362,6 @@ pub async fn create(
         body.health_check_period.unwrap_or(10),
         body.health_check_timeout.unwrap_or(5),
         body.health_check_failures.unwrap_or(3),
-        network_policy,
         webhook_id,
         app_type,
         body.use_network_policy.unwrap_or(false) as i8,
@@ -311,9 +371,10 @@ pub async fn create(
     .execute(&state.db)
     .await
     .map_err(|e| match e {
-        sqlx::Error::Database(ref de) if de.is_unique_violation() => {
-            AppError::Conflict(format!("app name '{}' already exists in project", body.name))
-        }
+        sqlx::Error::Database(ref de) if de.is_unique_violation() => AppError::Conflict(format!(
+            "app name '{}' already exists in project",
+            body.name
+        )),
         other => AppError::Database(other),
     })?;
 
@@ -383,10 +444,7 @@ pub struct UpdateAppRequest {
     pub health_check_timeout: Option<u16>,
     pub health_check_failures: Option<u8>,
 
-    // Network
-    pub network_policy: Option<String>,
-
-    // App type + fine-grained network policy
+    // App type + network policy
     pub app_type: Option<String>,
     pub use_network_policy: Option<bool>,
     pub ingress_network_policy: Option<String>,
@@ -404,7 +462,8 @@ pub async fn update(
     // Verify app belongs to project
     let exists = sqlx::query_scalar!(
         r#"SELECT COUNT(*) FROM apps WHERE id = ? AND project_id = ?"#,
-        app_id, project_id
+        app_id,
+        project_id
     )
     .fetch_one(&state.db)
     .await?;
@@ -413,13 +472,19 @@ pub async fn update(
     }
 
     // Re-encrypt secrets if provided
-    let reg_pass = body.container_registry_pass.as_deref()
+    let reg_pass = body
+        .container_registry_pass
+        .as_deref()
         .map(|p| state.crypto.encrypt(p))
         .transpose()?;
-    let git_token = body.git_token.as_deref()
+    let git_token = body
+        .git_token
+        .as_deref()
         .map(|t| state.crypto.encrypt(t))
         .transpose()?;
-    let container_args_json = body.container_args.as_ref()
+    let container_args_json = body
+        .container_args
+        .as_ref()
         .map(|v| serde_json::to_string(v))
         .transpose()
         .map_err(|e| AppError::BadRequest(format!("invalid container_args: {e}")))?;
@@ -439,26 +504,37 @@ pub async fn update(
         };
     }
 
-    push_str!("display_name = ?",          body.display_name.as_deref());
-    push_str!("pool_id = ?",               body.pool_id.as_deref());
-    push_str!("container_image = ?",       body.container_image.as_deref());
-    push_str!("container_registry_user = ?", body.container_registry_user.as_deref());
+    push_str!("display_name = ?", body.display_name.as_deref());
+    push_str!("pool_id = ?", body.pool_id.as_deref());
+    push_str!("container_image = ?", body.container_image.as_deref());
+    push_str!(
+        "container_registry_user = ?",
+        body.container_registry_user.as_deref()
+    );
     push_str!("container_registry_pass = ?", reg_pass.as_deref());
-    push_str!("git_url = ?",               body.git_url.as_deref());
-    push_str!("git_branch = ?",            body.git_branch.as_deref());
-    push_str!("git_token = ?",             git_token.as_deref());
-    push_str!("dockerfile_path = ?",       body.dockerfile_path.as_deref());
-    push_str!("container_command = ?",     body.container_command.as_deref());
-    push_str!("container_args = ?",        container_args_json.as_deref());
-    push_str!("working_dir = ?",           body.working_dir.as_deref());
-    push_str!("timezone = ?",              body.timezone.as_deref());
-    push_str!("health_check_type = ?",     body.health_check_type.as_deref());
-    push_str!("health_check_path = ?",     body.health_check_path.as_deref());
-    push_str!("health_check_scheme = ?",   body.health_check_scheme.as_deref());
-    push_str!("network_policy = ?",            body.network_policy.as_deref());
-    push_str!("app_type = ?",                  body.app_type.as_deref());
-    push_str!("ingress_network_policy = ?",    body.ingress_network_policy.as_deref());
-    push_str!("egress_network_policy = ?",     body.egress_network_policy.as_deref());
+    push_str!("git_url = ?", body.git_url.as_deref());
+    push_str!("git_branch = ?", body.git_branch.as_deref());
+    push_str!("git_token = ?", git_token.as_deref());
+    push_str!("dockerfile_path = ?", body.dockerfile_path.as_deref());
+    push_str!("container_command = ?", body.container_command.as_deref());
+    push_str!("container_args = ?", container_args_json.as_deref());
+    push_str!("working_dir = ?", body.working_dir.as_deref());
+    push_str!("timezone = ?", body.timezone.as_deref());
+    push_str!("health_check_type = ?", body.health_check_type.as_deref());
+    push_str!("health_check_path = ?", body.health_check_path.as_deref());
+    push_str!(
+        "health_check_scheme = ?",
+        body.health_check_scheme.as_deref()
+    );
+    push_str!("app_type = ?", body.app_type.as_deref());
+    push_str!(
+        "ingress_network_policy = ?",
+        body.ingress_network_policy.as_deref()
+    );
+    push_str!(
+        "egress_network_policy = ?",
+        body.egress_network_policy.as_deref()
+    );
 
     // Numeric / bool fields stored as strings for the unified binder
     macro_rules! push_num {
@@ -469,28 +545,40 @@ pub async fn update(
             }
         };
     }
-    push_num!("cpu_reservation_mcores = ?",  body.cpu_reservation_mcores);
-    push_num!("cpu_limit_mcores = ?",        body.cpu_limit_mcores);
-    push_num!("mem_reservation_mb = ?",      body.mem_reservation_mb);
-    push_num!("mem_limit_mb = ?",            body.mem_limit_mb);
-    push_num!("run_as_user = ?",             body.run_as_user);
-    push_num!("run_as_group = ?",            body.run_as_group);
-    push_num!("fs_group = ?",               body.fs_group);
-    push_num!("privileged = ?",              body.privileged.map(|v| v as u8));
-    push_num!("read_only_root_fs = ?",       body.read_only_root_fs.map(|v| v as u8));
-    push_num!("gpu_enabled = ?",             body.gpu_enabled.map(|v| v as u8));
-    push_num!("gpu_count = ?",               body.gpu_count);
-    push_num!("mount_ldap_files = ?",        body.mount_ldap_files.map(|v| v as u8));
-    push_num!("mount_etc_hosts = ?",         body.mount_etc_hosts.map(|v| v as u8));
-    push_num!("mount_user_home = ?",         body.mount_user_home.map(|v| v as u8));
-    push_num!("mount_app_data = ?",          body.mount_app_data.map(|v| v as u8));
-    push_num!("mount_app_logs = ?",          body.mount_app_logs.map(|v| v as u8));
-    push_num!("anti_affinity_enabled = ?",   body.anti_affinity_enabled.map(|v| v as u8));
-    push_num!("health_check_port = ?",       body.health_check_port);
-    push_num!("health_check_period = ?",     body.health_check_period);
-    push_num!("health_check_timeout = ?",    body.health_check_timeout);
-    push_num!("health_check_failures = ?",   body.health_check_failures);
-    push_num!("use_network_policy = ?",      body.use_network_policy.map(|v| v as u8));
+    push_num!("cpu_reservation_mcores = ?", body.cpu_reservation_mcores);
+    push_num!("cpu_limit_mcores = ?", body.cpu_limit_mcores);
+    push_num!("mem_reservation_mb = ?", body.mem_reservation_mb);
+    push_num!("mem_limit_mb = ?", body.mem_limit_mb);
+    push_num!("run_as_user = ?", body.run_as_user);
+    push_num!("run_as_group = ?", body.run_as_group);
+    push_num!("fs_group = ?", body.fs_group);
+    push_num!("privileged = ?", body.privileged.map(|v| v as u8));
+    push_num!(
+        "read_only_root_fs = ?",
+        body.read_only_root_fs.map(|v| v as u8)
+    );
+    push_num!("gpu_enabled = ?", body.gpu_enabled.map(|v| v as u8));
+    push_num!("gpu_count = ?", body.gpu_count);
+    push_num!(
+        "mount_ldap_files = ?",
+        body.mount_ldap_files.map(|v| v as u8)
+    );
+    push_num!("mount_etc_hosts = ?", body.mount_etc_hosts.map(|v| v as u8));
+    push_num!("mount_user_home = ?", body.mount_user_home.map(|v| v as u8));
+    push_num!("mount_app_data = ?", body.mount_app_data.map(|v| v as u8));
+    push_num!("mount_app_logs = ?", body.mount_app_logs.map(|v| v as u8));
+    push_num!(
+        "anti_affinity_enabled = ?",
+        body.anti_affinity_enabled.map(|v| v as u8)
+    );
+    push_num!("health_check_port = ?", body.health_check_port);
+    push_num!("health_check_period = ?", body.health_check_period);
+    push_num!("health_check_timeout = ?", body.health_check_timeout);
+    push_num!("health_check_failures = ?", body.health_check_failures);
+    push_num!(
+        "use_network_policy = ?",
+        body.use_network_policy.map(|v| v as u8)
+    );
 
     if sets.is_empty() {
         return Ok(axum::http::StatusCode::NO_CONTENT);
@@ -518,15 +606,32 @@ pub async fn delete_app(
     let ns = project_namespace(&state, &project_id).await?;
 
     if let Ok(cluster_id) = resolve_cluster_for_app(&state, &app_id).await {
-        let _ = crate::k8s::deployment::delete_app_resources(&state, &cluster_id, &ns, &app.name, &app_id).await;
+        let orch = cluster_orchestrator(&state, &cluster_id).await.unwrap_or_else(|_| "K3S".into());
+        if orch == "DOCKER" {
+            let _ = crate::docker::deployment::delete_app_resources(
+                &state, &cluster_id, &ns, &app.name, &app_id,
+            ).await;
+        } else {
+            let _ = crate::k8s::deployment::delete_app_resources(
+                &state, &cluster_id, &ns, &app.name, &app_id,
+            ).await;
+        }
     }
 
     // Release fixed IP allocations from VPC / public pools
     let _ = crate::k8s::network::release_app_ips(&state, &app_id).await;
 
-    sqlx::query!(r#"DELETE FROM apps WHERE id = ? AND project_id = ?"#, app_id, project_id)
-        .execute(&state.db)
-        .await?;
+    // Drop managed-service resources this app provisioned via templates.
+    // Best-effort: errors are logged inside the helper, app delete proceeds.
+    let _ = crate::api::templates_deploy::cleanup_bindings_for_app(&state, &app_id).await;
+
+    sqlx::query!(
+        r#"DELETE FROM apps WHERE id = ? AND project_id = ?"#,
+        app_id,
+        project_id
+    )
+    .execute(&state.db)
+    .await?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -546,7 +651,8 @@ pub async fn deploy(
                   COALESCE(mem_limit_mb, mem_reservation_mb, 0) AS mem,
                   status
            FROM apps WHERE id = ? AND project_id = ?"#,
-        app_id, project_id
+        app_id,
+        project_id
     )
     .fetch_optional(&state.db)
     .await?
@@ -563,13 +669,21 @@ pub async fn deploy(
     let quota_status = crate::quota::check(&state, &project_id).await?;
     if quota_status.any_warned() {
         crate::quota::record_violation(
-            &state, &project_id, Some(&app_id), "cpu_mcores",
-            quota_status.usage.cpu_mcores, quota_status.quota.cpu_mcores,
-            quota_status.cpu_pct, "warn",
-        ).await;
+            &state,
+            &project_id,
+            Some(&app_id),
+            "cpu_mcores",
+            quota_status.usage.cpu_mcores,
+            quota_status.quota.cpu_mcores,
+            quota_status.cpu_pct,
+            "warn",
+        )
+        .await;
         tracing::warn!(
-            project_id, app_id,
-            cpu_pct = quota_status.cpu_pct, mem_pct = quota_status.mem_pct,
+            project_id,
+            app_id,
+            cpu_pct = quota_status.cpu_pct,
+            mem_pct = quota_status.mem_pct,
             "quota approaching limit"
         );
     }
@@ -578,28 +692,57 @@ pub async fn deploy(
 
     super::events::record(&state, &app_id, "DEPLOY", "PENDING", &auth.user_id, None).await;
 
+    let orch = cluster_orchestrator(&state, &cluster_id).await?;
     let state_clone = state.clone();
     let app_id_clone = app_id.clone();
     let project_id_clone = project_id.clone();
     let user_id = auth.user_id.clone();
     tokio::spawn(async move {
-        let result = crate::k8s::deployment::deploy_app(
-            &state_clone,
-            &cluster_id,
-            &project_id_clone,
-            &app_id_clone,
-            &user_id,
-        )
-        .await;
+        let result = if orch == "DOCKER" {
+            crate::docker::deployment::deploy_app(
+                &state_clone,
+                &cluster_id,
+                &project_id_clone,
+                &app_id_clone,
+                &user_id,
+            )
+            .await
+        } else {
+            crate::k8s::deployment::deploy_app(
+                &state_clone,
+                &cluster_id,
+                &project_id_clone,
+                &app_id_clone,
+                &user_id,
+            )
+            .await
+        };
         match result {
             Ok(_) => {
-                super::events::record(&state_clone, &app_id_clone, "DEPLOY", "RUNNING", &user_id, None).await;
+                super::events::record(
+                    &state_clone,
+                    &app_id_clone,
+                    "DEPLOY",
+                    "RUNNING",
+                    &user_id,
+                    None,
+                )
+                .await;
             }
             Err(e) => {
                 tracing::error!("deploy failed for app {app_id_clone}: {e}");
-                super::events::record(&state_clone, &app_id_clone, "DEPLOY", "FAILED", &user_id, Some(&e.to_string())).await;
+                super::events::record(
+                    &state_clone,
+                    &app_id_clone,
+                    "DEPLOY",
+                    "FAILED",
+                    &user_id,
+                    Some(&e.to_string()),
+                )
+                .await;
                 let _ = sqlx::query!(
-                    r#"UPDATE apps SET status = 'FAILED' WHERE id = ?"#, app_id_clone
+                    r#"UPDATE apps SET status = 'FAILED' WHERE id = ?"#,
+                    app_id_clone
                 )
                 .execute(&state_clone.db)
                 .await;
@@ -628,7 +771,12 @@ pub async fn pause(
 
     let ns = project_namespace(&state, &project_id).await?;
     let cluster_id = resolve_cluster_for_app(&state, &app_id).await?;
-    crate::k8s::deployment::scale_deployment(&state, &cluster_id, &ns, &app.name, 0).await?;
+    let orch = cluster_orchestrator(&state, &cluster_id).await?;
+    if orch == "DOCKER" {
+        crate::docker::deployment::scale_deployment(&state, &cluster_id, &ns, &app.name, &app_id, 0).await?;
+    } else {
+        crate::k8s::deployment::scale_deployment(&state, &cluster_id, &ns, &app.name, 0).await?;
+    }
 
     // Set pingora maintenance location for all domains
     for domain in app_domains(&state, &app_id).await? {
@@ -648,8 +796,15 @@ pub async fn pause(
     .execute(&state.db)
     .await?;
 
-    super::events::record(&state, &app_id, "PAUSE", "SUCCEEDED", &auth.user_id,
-        body.reason.as_deref()).await;
+    super::events::record(
+        &state,
+        &app_id,
+        "PAUSE",
+        "SUCCEEDED",
+        &auth.user_id,
+        body.reason.as_deref(),
+    )
+    .await;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -679,7 +834,16 @@ pub async fn resume(
 
     let ns = project_namespace(&state, &project_id).await?;
     let cluster_id = resolve_cluster_for_app(&state, &app_id).await?;
-    crate::k8s::deployment::scale_deployment(&state, &cluster_id, &ns, &app.name, app.replicas as i32).await?;
+    let orch = cluster_orchestrator(&state, &cluster_id).await?;
+    if orch == "DOCKER" {
+        crate::docker::deployment::scale_deployment(
+            &state, &cluster_id, &ns, &app.name, &app_id, app.replicas as i32,
+        ).await?;
+    } else {
+        crate::k8s::deployment::scale_deployment(
+            &state, &cluster_id, &ns, &app.name, app.replicas as i32,
+        ).await?;
+    }
 
     // Remove pingora maintenance locations
     for domain in app_domains(&state, &app_id).await? {
@@ -740,8 +904,15 @@ pub async fn scale(
 
     let ns = project_namespace(&state, &project_id).await?;
     let cluster_id = resolve_cluster_for_app(&state, &app_id).await?;
+    let orch = cluster_orchestrator(&state, &cluster_id).await?;
 
-    crate::k8s::deployment::scale_deployment(&state, &cluster_id, &ns, &app.name, body.replicas).await?;
+    if orch == "DOCKER" {
+        crate::docker::deployment::scale_deployment(&state, &cluster_id, &ns, &app.name, &app_id, body.replicas)
+            .await?;
+    } else {
+        crate::k8s::deployment::scale_deployment(&state, &cluster_id, &ns, &app.name, body.replicas)
+            .await?;
+    }
 
     sqlx::query!(
         r#"UPDATE apps SET replicas = ? WHERE id = ?"#,
@@ -751,8 +922,15 @@ pub async fn scale(
     .execute(&state.db)
     .await?;
 
-    super::events::record(&state, &app_id, "SCALE", "SUCCEEDED", &auth.user_id,
-        Some(&format!("scaled to {} replicas", body.replicas))).await;
+    super::events::record(
+        &state,
+        &app_id,
+        "SCALE",
+        "SUCCEEDED",
+        &auth.user_id,
+        Some(&format!("scaled to {} replicas", body.replicas)),
+    )
+    .await;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -791,7 +969,8 @@ pub async fn list_env(
             let value = if r.is_secret != 0 && is_observer {
                 None
             } else if r.is_secret != 0 {
-                r.value.as_deref()
+                r.value
+                    .as_deref()
                     .and_then(|v| state.crypto.decrypt(v).ok())
             } else {
                 r.value.clone()
@@ -874,12 +1053,15 @@ pub async fn list_ports(
     )
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(serde_json::json!(rows.iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "container_port": r.container_port,
-        "protocol": r.protocol,
-        "nodeport": r.nodeport,
-    })).collect::<Vec<_>>())))
+    Ok(Json(serde_json::json!(rows
+        .iter()
+        .map(|r| serde_json::json!({
+            "id": r.id,
+            "container_port": r.container_port,
+            "protocol": r.protocol,
+            "nodeport": r.nodeport,
+        }))
+        .collect::<Vec<_>>())))
 }
 
 #[derive(Deserialize)]
@@ -906,7 +1088,10 @@ pub async fn add_port(
     )
     .execute(&state.db)
     .await?;
-    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({ "id": id })),
+    ))
 }
 
 pub async fn delete_port(
@@ -933,8 +1118,14 @@ pub async fn logs_stream(
     let ns = project_namespace(&state, &project_id).await?;
 
     let cluster_id = resolve_cluster_for_app(&state, &app_id).await?;
-    let stream = crate::k8s::deployment::log_stream(&state, &cluster_id, &ns, &app.name).await?;
-    Ok(Sse::new(stream))
+    let orch = cluster_orchestrator(&state, &cluster_id).await?;
+    if orch == "DOCKER" {
+        let stream = crate::docker::deployment::log_stream(&state, &cluster_id, &ns, &app.name, &app_id).await?;
+        Ok(Sse::new(stream).into_response())
+    } else {
+        let stream = crate::k8s::deployment::log_stream(&state, &cluster_id, &ns, &app.name).await?;
+        Ok(Sse::new(stream).into_response())
+    }
 }
 
 // ─── Terminal (WebSocket) ─────────────────────────────────────────────────────
@@ -950,8 +1141,14 @@ pub async fn terminal_ws(
     let ns = project_namespace(&state, &project_id).await?;
 
     let cluster_id = resolve_cluster_for_app(&state, &app_id).await?;
+    let orch = cluster_orchestrator(&state, &cluster_id).await?;
+    let app_id_clone = app_id.clone();
     Ok(ws.on_upgrade(move |socket| async move {
-        crate::k8s::deployment::handle_terminal(socket, state, cluster_id, ns, app.name).await;
+        if orch == "DOCKER" {
+            crate::docker::deployment::handle_terminal(socket, state, cluster_id, ns, app.name, app_id_clone).await;
+        } else {
+            crate::k8s::deployment::handle_terminal(socket, state, cluster_id, ns, app.name).await;
+        }
     }))
 }
 
@@ -967,27 +1164,34 @@ pub async fn metrics_current(
     use crate::metrics::names::*;
 
     let metrics_to_fetch: &[&str] = &[
-        APP_CPU_USED_MCORES, APP_MEM_USED_BYTES,
-        APP_DISK_READ_BYTES_RATE, APP_DISK_WRITE_BYTES_RATE,
-        APP_NET_RX_BYTES_RATE, APP_NET_TX_BYTES_RATE,
-        APP_GPU_UTIL_PCT, APP_GPU_MEM_USED_BYTES,
+        APP_CPU_USED_MCORES,
+        APP_MEM_USED_BYTES,
+        APP_DISK_READ_BYTES_RATE,
+        APP_DISK_WRITE_BYTES_RATE,
+        APP_NET_RX_BYTES_RATE,
+        APP_NET_TX_BYTES_RATE,
+        APP_GPU_UTIL_PCT,
+        APP_GPU_MEM_USED_BYTES,
         APP_POD_COUNT,
     ];
 
     let mut result = serde_json::Map::new();
     for &metric_name in metrics_to_fetch {
-        let sel = crate::metrics::types::MetricSelector::new(metric_name)
-            .label("app_id", app_id.clone());
+        let sel =
+            crate::metrics::types::MetricSelector::new(metric_name).label("app_id", app_id.clone());
         let pts = state.metrics.query_latest(sel).await.unwrap_or_default();
-        let values: Vec<serde_json::Value> = pts.iter().map(|p| {
-            let mut obj = serde_json::Map::new();
-            obj.insert("value".into(), serde_json::json!(p.value));
-            obj.insert("timestamp".into(), serde_json::json!(p.timestamp));
-            for (k, v) in &p.labels {
-                obj.insert(k.to_string(), serde_json::json!(v));
-            }
-            serde_json::Value::Object(obj)
-        }).collect();
+        let values: Vec<serde_json::Value> = pts
+            .iter()
+            .map(|p| {
+                let mut obj = serde_json::Map::new();
+                obj.insert("value".into(), serde_json::json!(p.value));
+                obj.insert("timestamp".into(), serde_json::json!(p.timestamp));
+                for (k, v) in &p.labels {
+                    obj.insert(k.to_string(), serde_json::json!(v));
+                }
+                serde_json::Value::Object(obj)
+            })
+            .collect();
         result.insert(metric_name.to_string(), serde_json::json!(values));
     }
 
@@ -1011,11 +1215,11 @@ pub async fn metrics_history(
 
     let now = chrono::Utc::now().timestamp();
     let range_secs: i64 = match q.range.as_deref().unwrap_or("1h") {
-        "30m" =>  1_800,
-        "1h"  =>  3_600,
-        "6h"  => 21_600,
+        "30m" => 1_800,
+        "1h" => 3_600,
+        "6h" => 21_600,
         "24h" => 86_400,
-        "7d"  => 604_800,
+        "7d" => 604_800,
         other => other.parse().unwrap_or(3_600),
     };
     let step = q.step.unwrap_or(60);
@@ -1024,7 +1228,8 @@ pub async fn metrics_history(
     let sel = crate::metrics::types::MetricSelector::new(q.metric.clone())
         .label("app_id", app_id.clone());
 
-    let series = state.metrics
+    let series = state
+        .metrics
         .query_range(sel, start, now, step)
         .await
         .unwrap_or_default();
@@ -1057,13 +1262,19 @@ pub async fn webhook(
     .ok_or_else(|| AppError::NotFound("webhook not found".into()))?;
 
     let cluster_id = resolve_cluster_for_app(&state, &row.id).await?;
+    let orch = cluster_orchestrator(&state, &cluster_id).await?;
     let state_clone = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = crate::k8s::deployment::deploy_app(
-            &state_clone, &cluster_id, &row.project_id, &row.id, "webhook",
-        )
-        .await
-        {
+        let result = if orch == "DOCKER" {
+            crate::docker::deployment::deploy_app(
+                &state_clone, &cluster_id, &row.project_id, &row.id, "webhook",
+            ).await
+        } else {
+            crate::k8s::deployment::deploy_app(
+                &state_clone, &cluster_id, &row.project_id, &row.id, "webhook",
+            ).await
+        };
+        if let Err(e) = result {
             tracing::error!("webhook deploy failed: {e}");
             let _ = sqlx::query!(r#"UPDATE apps SET status = 'FAILED' WHERE id = ?"#, row.id)
                 .execute(&state_clone.db)
@@ -1086,20 +1297,28 @@ pub async fn list_pods(
     // Verify app belongs to project
     let app_name = sqlx::query_scalar!(
         r#"SELECT name FROM apps WHERE id = ? AND project_id = ?"#,
-        app_id, project_id
+        app_id,
+        project_id
     )
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("app {app_id}")))?;
 
     let cluster_id = resolve_cluster_for_app(&state, &app_id).await?;
-    let ns = project_namespace(&state, &project_id).await?;
+    let orch = cluster_orchestrator(&state, &cluster_id).await?;
 
-    let pods = crate::k8s::pod_spec::list_pods_for_app(&state, &cluster_id, &ns, &app_name)
-        .await
-        .unwrap_or_default();
-
-    Ok(Json(pods))
+    if orch == "DOCKER" {
+        let containers = crate::docker::deployment::list_containers(&state, &app_id)
+            .await
+            .unwrap_or_default();
+        Ok(Json(containers))
+    } else {
+        let ns = project_namespace(&state, &project_id).await?;
+        let pods = crate::k8s::pod_spec::list_pods_for_app(&state, &cluster_id, &ns, &app_name)
+            .await
+            .unwrap_or_default();
+        Ok(Json(pods))
+    }
 }
 
 // ─── Webhook regenerate ───────────────────────────────────────────────────────
@@ -1114,7 +1333,9 @@ pub async fn regenerate_webhook(
     let new_webhook_id = uuid::Uuid::new_v4().to_string();
     sqlx::query!(
         r#"UPDATE apps SET webhook_id = ? WHERE id = ? AND project_id = ?"#,
-        new_webhook_id, app_id, project_id
+        new_webhook_id,
+        app_id,
+        project_id
     )
     .execute(&state.db)
     .await?;
@@ -1140,14 +1361,19 @@ pub async fn deployment_history(
     .fetch_all(&state.db)
     .await?;
 
-    let events: Vec<serde_json::Value> = rows.into_iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "event_type": r.event_type,
-        "status": r.status,
-        "triggered_by": r.triggered_by,
-        "message": r.message,
-        "created_at": r.created_at,
-    })).collect();
+    let events: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "event_type": r.event_type,
+                "status": r.status,
+                "triggered_by": r.triggered_by,
+                "message": r.message,
+                "created_at": r.created_at,
+            })
+        })
+        .collect();
 
     Ok(Json(events))
 }
@@ -1167,7 +1393,8 @@ pub async fn db_credentials(
         r#"SELECT a.name, a.app_type, p.name AS project_name
            FROM apps a JOIN projects p ON a.project_id = p.id
            WHERE a.id = ? AND a.project_id = ?"#,
-        app_id, project_id
+        app_id,
+        project_id
     )
     .fetch_optional(&state.db)
     .await?
@@ -1194,12 +1421,36 @@ pub async fn db_credentials(
     let host = format!("{}.{}.svc.cluster.local", row.name, row.project_name);
 
     let (port, default_db, user_key, pass_key, db_key) = match row.app_type.as_str() {
-        "POSTGRES"  => (5432u16, "postgres", "POSTGRES_USER",          "POSTGRES_PASSWORD",   "POSTGRES_DB"),
-        "MYSQL"     => (3306u16, "mysql",    "MYSQL_USER",             "MYSQL_ROOT_PASSWORD", "MYSQL_DATABASE"),
-        "MARIADB"   => (3306u16, "mariadb",  "MARIADB_USER",           "MARIADB_ROOT_PASSWORD","MARIADB_DATABASE"),
-        "MONGODB"   => (27017u16,"admin",    "MONGO_INITDB_ROOT_USERNAME","MONGO_INITDB_ROOT_PASSWORD","MONGO_INITDB_DATABASE"),
-        "REDIS"     => (6379u16, "",         "",                        "REDIS_PASSWORD",      ""),
-        _           => return Err(AppError::BadRequest("app is not a database type".into())),
+        "POSTGRES" => (
+            5432u16,
+            "postgres",
+            "POSTGRES_USER",
+            "POSTGRES_PASSWORD",
+            "POSTGRES_DB",
+        ),
+        "MYSQL" => (
+            3306u16,
+            "mysql",
+            "MYSQL_USER",
+            "MYSQL_ROOT_PASSWORD",
+            "MYSQL_DATABASE",
+        ),
+        "MARIADB" => (
+            3306u16,
+            "mariadb",
+            "MARIADB_USER",
+            "MARIADB_ROOT_PASSWORD",
+            "MARIADB_DATABASE",
+        ),
+        "MONGODB" => (
+            27017u16,
+            "admin",
+            "MONGO_INITDB_ROOT_USERNAME",
+            "MONGO_INITDB_ROOT_PASSWORD",
+            "MONGO_INITDB_DATABASE",
+        ),
+        "REDIS" => (6379u16, "", "", "REDIS_PASSWORD", ""),
+        _ => return Err(AppError::BadRequest("app is not a database type".into())),
     };
 
     Ok(Json(serde_json::json!({
@@ -1236,7 +1487,11 @@ async fn fetch_app_basic(state: &AppState, project_id: &str, app_id: &str) -> Ap
     })
 }
 
-async fn fetch_app(state: &AppState, project_id: &str, app_id: &str) -> AppResult<serde_json::Value> {
+async fn fetch_app(
+    state: &AppState,
+    project_id: &str,
+    app_id: &str,
+) -> AppResult<serde_json::Value> {
     let r = sqlx::query!(
         r#"SELECT id, name, display_name, source_type, container_image,
                   container_registry_user, git_url, git_branch, git_ref,
@@ -1251,8 +1506,8 @@ async fn fetch_app(state: &AppState, project_id: &str, app_id: &str) -> AppResul
                   anti_affinity_enabled,
                   health_check_type, health_check_path, health_check_port,
                   health_check_scheme, health_check_period, health_check_timeout, health_check_failures,
-                  network_policy, status, paused_at, pause_reason,
-                  webhook_id, pool_id,
+                  status, paused_at, pause_reason,
+                  webhook_id, pool_id, cluster_id,
                   app_type, use_network_policy, ingress_network_policy, egress_network_policy,
                   created_at, updated_at
            FROM apps WHERE id = ? AND project_id = ?"#,
@@ -1302,12 +1557,12 @@ async fn fetch_app(state: &AppState, project_id: &str, app_id: &str) -> AppResul
         "health_check_period": r.health_check_period,
         "health_check_timeout": r.health_check_timeout,
         "health_check_failures": r.health_check_failures,
-        "network_policy": r.network_policy,
         "status": r.status,
         "paused_at": r.paused_at,
         "pause_reason": r.pause_reason,
         "webhook_id": r.webhook_id,
         "pool_id": r.pool_id,
+        "cluster_id": r.cluster_id,
         "app_type": r.app_type,
         "use_network_policy": r.use_network_policy != 0,
         "ingress_network_policy": r.ingress_network_policy,
@@ -1324,26 +1579,96 @@ async fn project_namespace(state: &AppState, project_id: &str) -> AppResult<Stri
         .ok_or_else(|| AppError::NotFound(format!("project {project_id}")))
 }
 
+/// Resolve the cluster for an app.
+///
+/// If the app already has a `cluster_id` (from a previous deploy), reuse it.
+/// Otherwise pick the least-loaded active cluster in the app's pool, bind it,
+/// and return the ID.
+pub(crate) async fn default_active_pool_id(state: &AppState) -> AppResult<Option<String>> {
+    Ok(sqlx::query_scalar::<_, String>(
+        r#"SELECT c.pool_id
+           FROM clusters c
+           LEFT JOIN apps a ON a.cluster_id = c.id AND a.status IN ('RUNNING','DEPLOYING')
+           WHERE c.is_active = 1
+           GROUP BY c.id, c.pool_id
+           ORDER BY COUNT(a.id) ASC, c.created_at ASC
+           LIMIT 1"#
+    )
+    .fetch_optional(&state.db)
+    .await?)
+}
+
 async fn resolve_cluster_for_app(state: &AppState, app_id: &str) -> AppResult<String> {
-    let pool_id = sqlx::query_scalar!(
-        r#"SELECT pool_id FROM apps WHERE id = ?"#, app_id
+    let row = sqlx::query!(
+        r#"SELECT pool_id, cluster_id FROM apps WHERE id = ?"#,
+        app_id
     )
     .fetch_optional(&state.db)
     .await?
-    .flatten()
-    .ok_or_else(|| AppError::BadRequest(
-        "app has no pool assigned — set pool_id before deploying".into()
-    ))?;
+    .ok_or_else(|| AppError::NotFound(format!("app {app_id}")))?;
 
-    sqlx::query_scalar!(
-        r#"SELECT id FROM clusters WHERE pool_id = ? AND is_active = 1 ORDER BY created_at LIMIT 1"#,
+    // Reuse existing binding (verify cluster is still active)
+    if let Some(ref cid) = row.cluster_id {
+        let active = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) FROM clusters WHERE id = ? AND is_active = 1"#,
+            cid
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+        if active > 0 {
+            return Ok(cid.clone());
+        }
+        // Cluster deactivated — fall through to pick a new one
+        tracing::warn!(app_id, cluster_id = %cid, "bound cluster deactivated, re-selecting");
+    }
+
+    let pool_id = match row.pool_id {
+        Some(pool_id) => pool_id,
+        None => default_active_pool_id(state).await?.ok_or_else(|| {
+            AppError::BadRequest(
+                "no active cluster available — create or activate a cluster before deploying".into(),
+            )
+        })?,
+    };
+
+    // Pick the least-loaded active cluster in the pool (fewest running apps)
+    let cluster_id = sqlx::query_scalar!(
+        r#"SELECT c.id
+           FROM clusters c
+           LEFT JOIN apps a ON a.cluster_id = c.id AND a.status IN ('RUNNING','DEPLOYING')
+           WHERE c.pool_id = ? AND c.is_active = 1
+           GROUP BY c.id
+           ORDER BY COUNT(a.id) ASC, c.created_at ASC
+           LIMIT 1"#,
         pool_id
     )
     .fetch_optional(&state.db)
     .await?
-    .ok_or_else(|| AppError::BadRequest(
-        format!("no active cluster found in pool {pool_id}")
-    ))
+    .ok_or_else(|| AppError::BadRequest(format!("no active cluster found in pool {pool_id}")))?;
+
+    // Persist binding
+    sqlx::query(r#"UPDATE apps SET cluster_id = ?, pool_id = ? WHERE id = ?"#)
+        .bind(&cluster_id)
+        .bind(&pool_id)
+        .bind(app_id)
+    .execute(&state.db)
+    .await?;
+
+    tracing::info!(app_id, %cluster_id, "app bound to cluster");
+    Ok(cluster_id)
+}
+
+/// Returns the orchestrator type for a cluster: "K3S" (default) or "DOCKER".
+async fn cluster_orchestrator(state: &AppState, cluster_id: &str) -> AppResult<String> {
+    let orch: Option<String> = sqlx::query_scalar(
+        "SELECT orchestrator FROM clusters WHERE id = ?",
+    )
+    .bind(cluster_id)
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(orch.unwrap_or_else(|| "K3S".to_string()))
 }
 
 async fn app_domains(state: &AppState, app_id: &str) -> AppResult<Vec<String>> {
@@ -1377,14 +1702,17 @@ pub async fn list_events(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(serde_json::json!(rows.iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "event_type": r.event_type,
-        "status": r.status,
-        "message": r.message,
-        "triggered_by": r.triggered_by_username,
-        "created_at": r.created_at,
-    })).collect::<Vec<_>>())))
+    Ok(Json(serde_json::json!(rows
+        .iter()
+        .map(|r| serde_json::json!({
+            "id": r.id,
+            "event_type": r.event_type,
+            "status": r.status,
+            "message": r.message,
+            "triggered_by": r.triggered_by_username,
+            "created_at": r.created_at,
+        }))
+        .collect::<Vec<_>>())))
 }
 
 // ─── File mounts (inline config files) ───────────────────────────────────────
@@ -1401,11 +1729,14 @@ pub async fn list_file_mounts(
     )
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(serde_json::json!(rows.iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "filename": r.filename,
-        "mount_path": r.mount_path,
-    })).collect::<Vec<_>>())))
+    Ok(Json(serde_json::json!(rows
+        .iter()
+        .map(|r| serde_json::json!({
+            "id": r.id,
+            "filename": r.filename,
+            "mount_path": r.mount_path,
+        }))
+        .collect::<Vec<_>>())))
 }
 
 #[derive(Deserialize)]
@@ -1427,12 +1758,20 @@ pub async fn set_file_mount(
         r#"INSERT INTO app_file_mounts (id, app_id, filename, mount_path, content)
            VALUES (?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE content = ?, mount_path = ?"#,
-        id, app_id, body.filename, body.mount_path, body.content,
-        body.content, body.mount_path,
+        id,
+        app_id,
+        body.filename,
+        body.mount_path,
+        body.content,
+        body.content,
+        body.mount_path,
     )
     .execute(&state.db)
     .await?;
-    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({ "id": id })),
+    ))
 }
 
 pub async fn get_file_mount(
@@ -1444,7 +1783,8 @@ pub async fn get_file_mount(
     let r = sqlx::query!(
         r#"SELECT id, filename, mount_path, content FROM app_file_mounts
            WHERE id = ? AND app_id = ?"#,
-        file_id, app_id
+        file_id,
+        app_id
     )
     .fetch_optional(&state.db)
     .await?
@@ -1484,12 +1824,15 @@ pub async fn list_extra_volumes(
     )
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(serde_json::json!(rows.iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "host_path": r.host_path,
-        "mount_path": r.mount_path,
-        "read_only": r.read_only != 0,
-    })).collect::<Vec<_>>())))
+    Ok(Json(serde_json::json!(rows
+        .iter()
+        .map(|r| serde_json::json!({
+            "id": r.id,
+            "host_path": r.host_path,
+            "mount_path": r.mount_path,
+            "read_only": r.read_only != 0,
+        }))
+        .collect::<Vec<_>>())))
 }
 
 #[derive(Deserialize)]
@@ -1505,17 +1848,34 @@ pub async fn add_extra_volume(
     Path((project_id, app_id)): Path<(String, String)>,
     Json(body): Json<AddExtraVolumeRequest>,
 ) -> AppResult<impl IntoResponse> {
-    super::projects::check_project_access(&state, &auth, &project_id, "OPERATOR").await?;
+    // Extra volumes with arbitrary host_path are admin-only.
+    // Regular users should use managed volumes (system-assigned paths).
+    if !auth.is_global_admin {
+        return Err(AppError::Forbidden(
+            "extra host-path volumes require global admin — use managed volumes instead".into(),
+        ));
+    }
+
+    // Validate host_path: absolute, no traversal, not under sensitive dirs
+    crate::storage_guard::validate_admin_path(&body.host_path)?;
+
+    super::projects::check_project_access(&state, &auth, &project_id, "ADMIN").await?;
     let id = Uuid::new_v4().to_string();
     sqlx::query!(
         r#"INSERT INTO app_extra_volumes (id, app_id, host_path, mount_path, read_only)
            VALUES (?, ?, ?, ?, ?)"#,
-        id, app_id, body.host_path, body.mount_path,
+        id,
+        app_id,
+        body.host_path,
+        body.mount_path,
         body.read_only.unwrap_or(false) as i8,
     )
     .execute(&state.db)
     .await?;
-    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({ "id": id })),
+    ))
 }
 
 pub async fn delete_extra_volume(
@@ -1549,14 +1909,16 @@ pub async fn monitoring_app_status(
         .fetch_all(&state.db)
         .await?
         .into_iter()
-        .map(|r| serde_json::json!({
-            "app_id": r.id,
-            "app_name": r.name,
-            "project_id": r.project_id,
-            "project_name": r.project_name,
-            "status": r.status,
-            "replicas": r.replicas,
-        }))
+        .map(|r| {
+            serde_json::json!({
+                "app_id": r.id,
+                "app_name": r.name,
+                "project_id": r.project_id,
+                "project_name": r.project_name,
+                "status": r.status,
+                "replicas": r.replicas,
+            })
+        })
         .collect::<Vec<_>>()
     } else {
         sqlx::query!(
@@ -1571,14 +1933,16 @@ pub async fn monitoring_app_status(
         .fetch_all(&state.db)
         .await?
         .into_iter()
-        .map(|r| serde_json::json!({
-            "app_id": r.id,
-            "app_name": r.name,
-            "project_id": r.project_id,
-            "project_name": r.project_name,
-            "status": r.status,
-            "replicas": r.replicas,
-        }))
+        .map(|r| {
+            serde_json::json!({
+                "app_id": r.id,
+                "app_name": r.name,
+                "project_id": r.project_id,
+                "project_name": r.project_name,
+                "status": r.status,
+                "replicas": r.replicas,
+            })
+        })
         .collect::<Vec<_>>()
     };
 
@@ -1621,14 +1985,19 @@ pub async fn put_basic_auth(
     Json(body): Json<BasicAuthRequest>,
 ) -> AppResult<impl IntoResponse> {
     super::projects::check_project_access(&state, &auth, &project_id, "OPERATOR").await?;
-    let encrypted = state.crypto.encrypt(&body.password)
+    let encrypted = state
+        .crypto
+        .encrypt(&body.password)
         .unwrap_or_else(|_| body.password.clone());
     let id = Uuid::new_v4().to_string();
     sqlx::query!(
         r#"INSERT INTO app_basic_auth (id, app_id, username, password)
            VALUES (?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE username = VALUES(username), password = VALUES(password)"#,
-        id, app_id, body.username, encrypted
+        id,
+        app_id,
+        body.username,
+        encrypted
     )
     .execute(&state.db)
     .await?;
@@ -1665,15 +2034,21 @@ pub async fn list_managed_volumes(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(rows.iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "name": r.name,
-        "container_mount_path": r.container_mount_path,
-        "host_path": r.host_path,
-        "share_with_others": r.share_with_others != 0,
-        "shared_volume_id": r.shared_volume_id,
-        "created_at": r.created_at,
-    })).collect::<Vec<_>>()))
+    Ok(Json(
+        rows.iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "container_mount_path": r.container_mount_path,
+                    "host_path": r.host_path,
+                    "share_with_others": r.share_with_others != 0,
+                    "shared_volume_id": r.shared_volume_id,
+                    "created_at": r.created_at,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1696,21 +2071,31 @@ pub async fn create_managed_volume(
     let storage_root = &state.config.storage.root_path;
     let host_path = format!("{}/projects/{}/volumes/{}", storage_root, project_id, id);
 
+    // Defense-in-depth: verify the generated path is under storage_root
+    crate::storage_guard::validate_user_path(&host_path, storage_root)?;
+
     sqlx::query!(
         r#"INSERT INTO app_managed_volumes
            (id, app_id, name, container_mount_path, host_path, share_with_others, shared_volume_id)
            VALUES (?, ?, ?, ?, ?, ?, ?)"#,
-        id, app_id, body.name, body.container_mount_path, host_path,
+        id,
+        app_id,
+        body.name,
+        body.container_mount_path,
+        host_path,
         body.share_with_others.unwrap_or(false) as i8,
         body.shared_volume_id,
     )
     .execute(&state.db)
     .await?;
 
-    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({
-        "id": id,
-        "host_path": host_path,
-    }))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": id,
+            "host_path": host_path,
+        })),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1729,16 +2114,31 @@ pub async fn update_managed_volume(
 ) -> AppResult<impl IntoResponse> {
     super::projects::check_project_access(&state, &auth, &project_id, "OPERATOR").await?;
     if let Some(name) = &body.name {
-        sqlx::query!(r#"UPDATE app_managed_volumes SET name = ? WHERE id = ?"#, name, vol_id)
-            .execute(&state.db).await?;
+        sqlx::query!(
+            r#"UPDATE app_managed_volumes SET name = ? WHERE id = ?"#,
+            name,
+            vol_id
+        )
+        .execute(&state.db)
+        .await?;
     }
     if let Some(path) = &body.container_mount_path {
-        sqlx::query!(r#"UPDATE app_managed_volumes SET container_mount_path = ? WHERE id = ?"#, path, vol_id)
-            .execute(&state.db).await?;
+        sqlx::query!(
+            r#"UPDATE app_managed_volumes SET container_mount_path = ? WHERE id = ?"#,
+            path,
+            vol_id
+        )
+        .execute(&state.db)
+        .await?;
     }
     if let Some(share) = body.share_with_others {
-        sqlx::query!(r#"UPDATE app_managed_volumes SET share_with_others = ? WHERE id = ?"#, share as i8, vol_id)
-            .execute(&state.db).await?;
+        sqlx::query!(
+            r#"UPDATE app_managed_volumes SET share_with_others = ? WHERE id = ?"#,
+            share as i8,
+            vol_id
+        )
+        .execute(&state.db)
+        .await?;
     }
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -1751,7 +2151,8 @@ pub async fn delete_managed_volume(
 ) -> AppResult<impl IntoResponse> {
     super::projects::check_project_access(&state, &auth, &project_id, "OPERATOR").await?;
     sqlx::query!(r#"DELETE FROM app_managed_volumes WHERE id = ?"#, vol_id)
-        .execute(&state.db).await?;
+        .execute(&state.db)
+        .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -1771,18 +2172,25 @@ pub async fn list_shareable_volumes(
            JOIN apps a ON a.id = v.app_id
            WHERE a.project_id = ? AND v.share_with_others = 1 AND v.app_id != ?
            ORDER BY v.created_at"#,
-        project_id, exclude_app_id
+        project_id,
+        exclude_app_id
     )
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(rows.iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "name": r.name,
-        "app_id": r.app_id,
-        "container_mount_path": r.container_mount_path,
-        "host_path": r.host_path,
-    })).collect::<Vec<_>>()))
+    Ok(Json(
+        rows.iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "app_id": r.app_id,
+                    "container_mount_path": r.container_mount_path,
+                    "host_path": r.host_path,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 /// GET /api/v1/projects/:pid/apps/:aid/managed-volumes/:vid/usage
@@ -1833,17 +2241,23 @@ pub async fn list_volume_backups(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(rows.iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "s3_target_id": r.s3_target_id,
-        "cron_expr": r.cron_expr,
-        "retention_days": r.retention_days,
-        "use_db_backup": r.use_db_backup != 0,
-        "is_active": r.is_active != 0,
-        "last_run_at": r.last_run_at,
-        "last_run_status": r.last_run_status,
-        "created_at": r.created_at,
-    })).collect::<Vec<_>>()))
+    Ok(Json(
+        rows.iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "s3_target_id": r.s3_target_id,
+                    "cron_expr": r.cron_expr,
+                    "retention_days": r.retention_days,
+                    "use_db_backup": r.use_db_backup != 0,
+                    "is_active": r.is_active != 0,
+                    "last_run_at": r.last_run_at,
+                    "last_run_status": r.last_run_status,
+                    "created_at": r.created_at,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1867,14 +2281,20 @@ pub async fn create_volume_backup(
         r#"INSERT INTO app_volume_backups
            (id, volume_id, s3_target_id, cron_expr, retention_days, use_db_backup)
            VALUES (?, ?, ?, ?, ?, ?)"#,
-        id, vol_id, body.s3_target_id, body.cron_expr,
+        id,
+        vol_id,
+        body.s3_target_id,
+        body.cron_expr,
         body.retention_days.unwrap_or(7),
         body.use_db_backup.unwrap_or(false) as i8,
     )
     .execute(&state.db)
     .await?;
 
-    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({ "id": id })),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1893,16 +2313,31 @@ pub async fn update_volume_backup(
 ) -> AppResult<impl IntoResponse> {
     super::projects::check_project_access(&state, &auth, &project_id, "OPERATOR").await?;
     if let Some(cron) = &body.cron_expr {
-        sqlx::query!(r#"UPDATE app_volume_backups SET cron_expr = ? WHERE id = ?"#, cron, backup_id)
-            .execute(&state.db).await?;
+        sqlx::query!(
+            r#"UPDATE app_volume_backups SET cron_expr = ? WHERE id = ?"#,
+            cron,
+            backup_id
+        )
+        .execute(&state.db)
+        .await?;
     }
     if let Some(days) = body.retention_days {
-        sqlx::query!(r#"UPDATE app_volume_backups SET retention_days = ? WHERE id = ?"#, days, backup_id)
-            .execute(&state.db).await?;
+        sqlx::query!(
+            r#"UPDATE app_volume_backups SET retention_days = ? WHERE id = ?"#,
+            days,
+            backup_id
+        )
+        .execute(&state.db)
+        .await?;
     }
     if let Some(active) = body.is_active {
-        sqlx::query!(r#"UPDATE app_volume_backups SET is_active = ? WHERE id = ?"#, active as i8, backup_id)
-            .execute(&state.db).await?;
+        sqlx::query!(
+            r#"UPDATE app_volume_backups SET is_active = ? WHERE id = ?"#,
+            active as i8,
+            backup_id
+        )
+        .execute(&state.db)
+        .await?;
     }
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -1915,7 +2350,8 @@ pub async fn delete_volume_backup(
 ) -> AppResult<impl IntoResponse> {
     super::projects::check_project_access(&state, &auth, &project_id, "OPERATOR").await?;
     sqlx::query!(r#"DELETE FROM app_volume_backups WHERE id = ?"#, backup_id)
-        .execute(&state.db).await?;
+        .execute(&state.db)
+        .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -1954,14 +2390,20 @@ pub async fn list_db_tools(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(rows.iter().map(|r| serde_json::json!({
-        "id": r.id,
-        "tool": r.tool,
-        "status": r.status,
-        "access_url": r.access_url,
-        "username": r.username,
-        "created_at": r.created_at,
-    })).collect::<Vec<_>>()))
+    Ok(Json(
+        rows.iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "tool": r.tool,
+                    "status": r.status,
+                    "access_url": r.access_url,
+                    "username": r.username,
+                    "created_at": r.created_at,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1991,11 +2433,14 @@ pub async fn deploy_db_tool(
     .execute(&state.db)
     .await?;
 
-    Ok((axum::http::StatusCode::CREATED, Json(serde_json::json!({
-        "id": id,
-        "username": username,
-        "password": password,
-    }))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": id,
+            "username": username,
+            "password": password,
+        })),
+    ))
 }
 
 /// GET /api/v1/projects/:pid/apps/:aid/db-tools/:tool
@@ -2008,7 +2453,8 @@ pub async fn get_db_tool(
     let row = sqlx::query!(
         r#"SELECT id, tool, status, access_url, username, password, created_at
            FROM app_db_tools WHERE app_id = ? AND tool = ?"#,
-        app_id, tool
+        app_id,
+        tool
     )
     .fetch_optional(&state.db)
     .await?
@@ -2033,9 +2479,13 @@ pub async fn delete_db_tool(
 ) -> AppResult<impl IntoResponse> {
     super::projects::check_project_access(&state, &auth, &project_id, "OPERATOR").await?;
     // TODO: tear down K8s deployment when K8s integration is ready
-    sqlx::query!(r#"DELETE FROM app_db_tools WHERE app_id = ? AND tool = ?"#, app_id, tool)
-        .execute(&state.db)
-        .await?;
+    sqlx::query!(
+        r#"DELETE FROM app_db_tools WHERE app_id = ? AND tool = ?"#,
+        app_id,
+        tool
+    )
+    .execute(&state.db)
+    .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -2060,7 +2510,16 @@ pub async fn monitoring_apps(
         .fetch_all(&state.db)
         .await?
         .into_iter()
-        .map(|r| (r.id, r.name, r.project_id, r.project_name, r.status, r.replicas))
+        .map(|r| {
+            (
+                r.id,
+                r.name,
+                r.project_id,
+                r.project_name,
+                r.status,
+                r.replicas,
+            )
+        })
         .collect::<Vec<_>>()
     } else {
         sqlx::query!(
@@ -2075,18 +2534,31 @@ pub async fn monitoring_apps(
         .fetch_all(&state.db)
         .await?
         .into_iter()
-        .map(|r| (r.id, r.name, r.project_id, r.project_name, r.status, r.replicas))
+        .map(|r| {
+            (
+                r.id,
+                r.name,
+                r.project_id,
+                r.project_name,
+                r.status,
+                r.replicas,
+            )
+        })
         .collect::<Vec<_>>()
     };
 
     let mut result = Vec::new();
     for (app_id, app_name, project_id, project_name, status, replicas) in rows {
-        let cpu_pts = state.metrics.query_latest(
-            MetricSelector::new(APP_CPU_USED_MCORES).label("app_id", app_id.clone())
-        ).await.unwrap_or_default();
-        let ram_pts = state.metrics.query_latest(
-            MetricSelector::new(APP_MEM_USED_BYTES).label("app_id", app_id.clone())
-        ).await.unwrap_or_default();
+        let cpu_pts = state
+            .metrics
+            .query_latest(MetricSelector::new(APP_CPU_USED_MCORES).label("app_id", app_id.clone()))
+            .await
+            .unwrap_or_default();
+        let ram_pts = state
+            .metrics
+            .query_latest(MetricSelector::new(APP_MEM_USED_BYTES).label("app_id", app_id.clone()))
+            .await
+            .unwrap_or_default();
 
         let cpu_mcores = cpu_pts.first().map(|p| p.value).unwrap_or(0.0);
         let ram_bytes = ram_pts.first().map(|p| p.value).unwrap_or(0.0);
@@ -2125,17 +2597,19 @@ pub async fn monitoring_managed_volumes(
         .fetch_all(&state.db)
         .await?
         .into_iter()
-        .map(|r| serde_json::json!({
-            "id": r.id,
-            "name": r.name,
-            "container_mount_path": r.container_mount_path,
-            "host_path": r.host_path,
-            "app_id": r.app_id,
-            "app_name": r.app_name,
-            "project_id": r.project_id,
-            "project_name": r.project_name,
-            "usage_bytes": null,
-        }))
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "name": r.name,
+                "container_mount_path": r.container_mount_path,
+                "host_path": r.host_path,
+                "app_id": r.app_id,
+                "app_name": r.app_name,
+                "project_id": r.project_id,
+                "project_name": r.project_name,
+                "usage_bytes": null,
+            })
+        })
         .collect::<Vec<_>>()
     } else {
         sqlx::query!(
@@ -2152,17 +2626,19 @@ pub async fn monitoring_managed_volumes(
         .fetch_all(&state.db)
         .await?
         .into_iter()
-        .map(|r| serde_json::json!({
-            "id": r.id,
-            "name": r.name,
-            "container_mount_path": r.container_mount_path,
-            "host_path": r.host_path,
-            "app_id": r.app_id,
-            "app_name": r.app_name,
-            "project_id": r.project_id,
-            "project_name": r.project_name,
-            "usage_bytes": null,
-        }))
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "name": r.name,
+                "container_mount_path": r.container_mount_path,
+                "host_path": r.host_path,
+                "app_id": r.app_id,
+                "app_name": r.app_name,
+                "project_id": r.project_id,
+                "project_name": r.project_name,
+                "usage_bytes": null,
+            })
+        })
         .collect::<Vec<_>>()
     };
 

@@ -1,0 +1,61 @@
+{
+  "slug": "minio",
+  "name": "MinIO",
+  "icon_url": "https://raw.githubusercontent.com/minio/minio/master/.github/logo.svg",
+  "category": "app",
+  "image_repository": "minio/minio",
+  "image_tag": "latest",
+  "spec": {
+    "appModel": {
+      "name": "MinIO",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 5,
+      "healthCheckFailureThreshold": 3,
+      "containerCommand": "minio",
+      "containerArgs": "[\"server\", \"/data\", \"--console-address\", \":9001\"]"
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 5000,
+        "containerMountPath": "/data",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 9000
+      },
+      {
+        "port": 9001
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "key": "MINIO_ROOT_USER",
+      "label": "Root Username",
+      "value": "minioadmin",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": false
+    },
+    {
+      "key": "MINIO_ROOT_PASSWORD",
+      "label": "Root Password",
+      "value": "",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": true
+    }
+  ]
+}

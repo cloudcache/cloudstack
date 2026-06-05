@@ -9,6 +9,7 @@ use axum::{
 };
 use chrono::NaiveDate;
 use serde::Deserialize;
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
@@ -43,11 +44,14 @@ pub async fn get_wallet(
             "currency": w.currency,
             "updated_at": w.updated_at,
         }))),
-        None => Ok(Json(serde_json::json!({
-            "balance": 0,
-            "currency": "CNY",
-            "updated_at": null,
-        }))),
+        None => {
+            let currency = crate::billing::billing_currency(&state).await;
+            Ok(Json(serde_json::json!({
+                "balance": 0,
+                "currency": currency,
+                "updated_at": null,
+            })))
+        }
     }
 }
 
@@ -358,15 +362,98 @@ pub async fn admin_list_wallets(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(serde_json::json!(rows.iter().map(|r| serde_json::json!({
-        "user_id": r.id,
-        "username": r.username,
-        "email": r.email,
-        "is_active": r.is_active != 0,
-        "balance": r.balance,
-        "currency": r.currency,
-        "updated_at": r.updated_at,
-    })).collect::<Vec<_>>())))
+    Ok(Json(serde_json::json!(rows
+        .iter()
+        .map(|r| serde_json::json!({
+            "user_id": r.id,
+            "username": r.username,
+            "email": r.email,
+            "is_active": r.is_active != 0,
+            "balance": r.balance,
+            "currency": r.currency,
+            "updated_at": r.updated_at,
+        }))
+        .collect::<Vec<_>>())))
+}
+
+// ─── Admin: transaction ledger ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct AdminTransactionQuery {
+    pub search: Option<String>,
+    pub tx_type: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+pub async fn admin_list_transactions(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Query(q): Query<AdminTransactionQuery>,
+) -> AppResult<impl IntoResponse> {
+    require_admin(&auth)?;
+
+    let page = q.page.unwrap_or(1).max(1);
+    let per_page = q.per_page.unwrap_or(50).min(200);
+    let offset = (page - 1) * per_page;
+    let search = q.search.as_ref().map(|s| format!("%{s}%"));
+
+    let rows = sqlx::query(
+        r#"SELECT wt.id, wt.user_id, u.username, u.email, wt.tx_type, wt.amount,
+                  wt.balance_after, wt.description, wt.ref_id, wt.operator_id,
+                  op.username AS operator_username, wt.created_at
+           FROM wallet_transactions wt
+           JOIN users u ON u.id = wt.user_id
+           LEFT JOIN users op ON op.id = wt.operator_id
+           WHERE (? IS NULL OR u.username LIKE ? OR u.email LIKE ?)
+             AND (? IS NULL OR wt.tx_type = ?)
+           ORDER BY wt.created_at DESC
+           LIMIT ? OFFSET ?"#,
+    )
+    .bind(search.clone())
+    .bind(search.clone())
+    .bind(search.clone())
+    .bind(q.tx_type.clone())
+    .bind(q.tx_type.clone())
+    .bind(per_page)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await?;
+
+    let total: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+           FROM wallet_transactions wt
+           JOIN users u ON u.id = wt.user_id
+           WHERE (? IS NULL OR u.username LIKE ? OR u.email LIKE ?)
+             AND (? IS NULL OR wt.tx_type = ?)"#,
+    )
+    .bind(search.clone())
+    .bind(search.clone())
+    .bind(search)
+    .bind(q.tx_type.clone())
+    .bind(q.tx_type)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "data": rows.iter().map(|r| serde_json::json!({
+            "id": r.get::<String, _>("id"),
+            "user_id": r.get::<String, _>("user_id"),
+            "username": r.get::<String, _>("username"),
+            "email": r.try_get::<String, _>("email").ok(),
+            "type": r.get::<String, _>("tx_type"),
+            "amount": r.get::<rust_decimal::Decimal, _>("amount"),
+            "balance_after": r.get::<rust_decimal::Decimal, _>("balance_after"),
+            "description": r.try_get::<String, _>("description").ok(),
+            "ref_id": r.try_get::<String, _>("ref_id").ok(),
+            "operator_id": r.try_get::<String, _>("operator_id").ok(),
+            "operator_username": r.try_get::<String, _>("operator_username").ok(),
+            "created_at": r.get::<chrono::NaiveDateTime, _>("created_at"),
+        })).collect::<Vec<_>>(),
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    })))
 }
 
 // ─── Admin: recharge ──────────────────────────────────────────────────────────
@@ -386,24 +473,27 @@ pub async fn admin_recharge(
     require_admin(&auth)?;
 
     if body.amount <= rust_decimal::Decimal::ZERO {
-        return Err(AppError::BadRequest("recharge amount must be positive".into()));
+        return Err(AppError::BadRequest(
+            "recharge amount must be positive".into(),
+        ));
     }
 
-    // Upsert wallet + atomically update balance
+    let mut db_tx = state.db.begin().await?;
+
     sqlx::query!(
         r#"INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)
            ON DUPLICATE KEY UPDATE balance = balance + VALUES(balance)"#,
         body.user_id,
         body.amount,
     )
-    .execute(&state.db)
+    .execute(&mut *db_tx)
     .await?;
 
     let new_balance = sqlx::query_scalar!(
         r#"SELECT balance FROM user_wallets WHERE user_id = ?"#,
         body.user_id
     )
-    .fetch_one(&state.db)
+    .fetch_one(&mut *db_tx)
     .await?;
 
     let tx_id = Uuid::new_v4().to_string();
@@ -418,8 +508,10 @@ pub async fn admin_recharge(
         body.description,
         auth.user_id,
     )
-    .execute(&state.db)
+    .execute(&mut *db_tx)
     .await?;
+
+    db_tx.commit().await?;
 
     Ok(Json(serde_json::json!({
         "transaction_id": tx_id,
@@ -445,8 +537,12 @@ pub async fn admin_adjust_balance(
     require_admin(&auth)?;
 
     if body.description.trim().is_empty() {
-        return Err(AppError::BadRequest("description is required for adjustments".into()));
+        return Err(AppError::BadRequest(
+            "description is required for adjustments".into(),
+        ));
     }
+
+    let mut db_tx = state.db.begin().await?;
 
     sqlx::query!(
         r#"INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)
@@ -454,14 +550,14 @@ pub async fn admin_adjust_balance(
         body.user_id,
         body.amount,
     )
-    .execute(&state.db)
+    .execute(&mut *db_tx)
     .await?;
 
     let new_balance = sqlx::query_scalar!(
         r#"SELECT balance FROM user_wallets WHERE user_id = ?"#,
         body.user_id
     )
-    .fetch_one(&state.db)
+    .fetch_one(&mut *db_tx)
     .await?;
 
     let tx_id = Uuid::new_v4().to_string();
@@ -476,8 +572,10 @@ pub async fn admin_adjust_balance(
         body.description.trim(),
         auth.user_id,
     )
-    .execute(&state.db)
+    .execute(&mut *db_tx)
     .await?;
+
+    db_tx.commit().await?;
 
     Ok(Json(serde_json::json!({
         "transaction_id": tx_id,
@@ -502,7 +600,9 @@ pub async fn admin_generate_invoice(
     require_admin(&auth)?;
 
     if body.period_end <= body.period_start {
-        return Err(AppError::BadRequest("period_end must be after period_start".into()));
+        return Err(AppError::BadRequest(
+            "period_end must be after period_start".into(),
+        ));
     }
 
     // Aggregate snapshots in the period
@@ -684,6 +784,33 @@ pub async fn admin_mark_paid(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+// ─── Admin: void invoice ──────────────────────────────────────────────────────
+
+pub async fn admin_void_invoice(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(invoice_id): Path<String>,
+) -> AppResult<impl IntoResponse> {
+    require_admin(&auth)?;
+
+    let row = sqlx::query(r#"SELECT status FROM invoices WHERE id = ?"#)
+        .bind(&invoice_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("invoice {invoice_id}")))?;
+
+    if row.get::<String, _>("status") == "PAID" {
+        return Err(AppError::BadRequest("cannot void a paid invoice".into()));
+    }
+
+    sqlx::query(r#"UPDATE invoices SET status = 'VOID' WHERE id = ?"#)
+        .bind(invoice_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 fn generate_invoice_no() -> String {
     use chrono::Utc;
     let now = Utc::now();
@@ -717,18 +844,24 @@ pub async fn get_project_network_usage(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(rows.into_iter().map(|r| serde_json::json!({
-        "billing_month":        r.billing_month,
-        "p95_egress_mbps":      r.p95_egress_mbps,
-        "total_egress_bytes":   r.total_egress_bytes,
-        "total_ingress_bytes":  r.total_ingress_bytes,
-        "mean_req_body_bytes":  r.mean_req_body_bytes,
-        "mean_resp_body_bytes": r.mean_resp_body_bytes,
-        "total_req_count":      r.total_req_count,
-        "egress_charge":        r.egress_charge,
-        "status":               r.status,
-        "charged_at":           r.charged_at,
-    })).collect::<Vec<_>>()))
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "billing_month":        r.billing_month,
+                    "p95_egress_mbps":      r.p95_egress_mbps,
+                    "total_egress_bytes":   r.total_egress_bytes,
+                    "total_ingress_bytes":  r.total_ingress_bytes,
+                    "mean_req_body_bytes":  r.mean_req_body_bytes,
+                    "mean_resp_body_bytes": r.mean_resp_body_bytes,
+                    "total_req_count":      r.total_req_count,
+                    "egress_charge":        r.egress_charge,
+                    "status":               r.status,
+                    "charged_at":           r.charged_at,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 pub async fn get_overdue_status(
@@ -756,12 +889,14 @@ pub async fn get_overdue_status(
         .fetch_all(&state.db)
         .await?
         .into_iter()
-        .map(|r| serde_json::json!({
-            "charge_date":     r.charge_date,
-            "overdue_balance": r.overdue_balance,
-            "fee_amount":      r.fee_amount,
-            "status":          r.status,
-        }))
+        .map(|r| {
+            serde_json::json!({
+                "charge_date":     r.charge_date,
+                "overdue_balance": r.overdue_balance,
+                "fee_amount":      r.fee_amount,
+                "status":          r.status,
+            })
+        })
         .collect::<Vec<_>>()
     } else {
         vec![]
@@ -790,7 +925,9 @@ pub async fn admin_compute_network_charges(
         return Err(AppError::Forbidden("admin only".into()));
     }
     let count = crate::billing::apply_monthly_network_charges(&state, &body.billing_month).await?;
-    Ok(Json(serde_json::json!({ "computed": count, "billing_month": body.billing_month })))
+    Ok(Json(
+        serde_json::json!({ "computed": count, "billing_month": body.billing_month }),
+    ))
 }
 
 pub async fn admin_collect_network_charges(
@@ -801,8 +938,11 @@ pub async fn admin_collect_network_charges(
     if !auth.is_global_admin {
         return Err(AppError::Forbidden("admin only".into()));
     }
-    let projects = crate::billing::collect_monthly_network_charges(&state, &body.billing_month).await?;
-    Ok(Json(serde_json::json!({ "collected_projects": projects, "count": projects.len() })))
+    let projects =
+        crate::billing::collect_monthly_network_charges(&state, &body.billing_month).await?;
+    Ok(Json(
+        serde_json::json!({ "collected_projects": projects, "count": projects.len() }),
+    ))
 }
 
 pub async fn admin_list_overdue(
@@ -825,10 +965,16 @@ pub async fn admin_list_overdue(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(rows.into_iter().map(|r| serde_json::json!({
-        "username":      r.username,
-        "email":         r.email,
-        "balance":       r.balance,
-        "overdue_since": r.overdue_since,
-    })).collect::<Vec<_>>()))
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "username":      r.username,
+                    "email":         r.email,
+                    "balance":       r.balance,
+                    "overdue_since": r.overdue_since,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
 }

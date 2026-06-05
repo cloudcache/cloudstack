@@ -216,7 +216,7 @@ data：.dockerconfigjson
 
 #### Service（NodePort 类型）
 
-每个应用创建一个 `NodePort` 类型的 K8s Service，Caddy 直接将外部流量路由到此端口，无需 Ingress 中间层。
+每个应用创建一个 `NodePort` 类型的 K8s Service，Pingora 直接将外部流量路由到此端口，无需 Ingress 中间层。
 
 ```yaml
 apiVersion: v1
@@ -1119,7 +1119,7 @@ impl CryptoService {
 4. 从 platform_config 表加载运行时配置
 5. 初始化 LDAP 连接池
 6. 初始化 K8s client（kube-rs in-cluster）
-7. 初始化 CaddyClient（从 load_balancers 表加载）
+7. 初始化 PingoraClient（从 load_balancers 表加载）
 8. 初始化 数据库集群连接池（从 database_clusters 表加载）
 9. 启动 LDAP 定时同步任务（tokio::spawn）
 10. 启动 K8s Pod 状态 Watch 任务
@@ -1131,7 +1131,7 @@ impl CryptoService {
       → db（sqlx，MySQL platform DB）
       → k8s（kube-rs）
       → ldap（ldap3）
-      → lb（CaddyClient）
+      → lb（PingoraClient）
       → cluster_db（sqlx，租户 DB 集群）
       → crypto（AES-256-GCM）
       → ssh（russh，仅节点管理）

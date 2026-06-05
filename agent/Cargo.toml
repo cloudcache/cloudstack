@@ -1,0 +1,25 @@
+[package]
+name = "qs-agent"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "qs-agent"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+bollard = "0.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.5", features = ["trace"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+uuid = { version = "1", features = ["v4"] }
+futures = "0.3"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+async-stream = "0.3"
+tokio-stream = "0.1"

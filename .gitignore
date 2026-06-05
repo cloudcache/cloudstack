@@ -4,16 +4,20 @@
 /backend/.sqlx/
 # dependencies
 /node_modules
+/frontend/node_modules
 /.pnp
 .pnp.js
 .yarn/install-state.gz
 
 # testing
 /coverage
+/frontend/coverage
 
 # next.js
 /.next/
+/frontend/.next/
 /out/
+/frontend/out/
 
 # production
 /build
@@ -36,6 +40,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+frontend/next-env.d.ts
 .devcontainer/devcontainer.env
 
 db

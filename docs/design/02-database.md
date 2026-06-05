@@ -342,8 +342,8 @@ CREATE TABLE app_ports (
   app_id          CHAR(36)          NOT NULL,
   container_port  SMALLINT UNSIGNED NOT NULL,
   protocol        ENUM('TCP','UDP') NOT NULL DEFAULT 'TCP',
-  -- NodePort 由平台在首次部署时分配（30000-32767），创建 K8s Service 后写入
-  nodeport        SMALLINT UNSIGNED NULL     COMMENT 'K8s NodePort，Caddy 上游使用此端口',
+  -- NodePort 由平台在首次部署时从可配置范围分配（platform_config: nodeport_range_start/end），创建 K8s Service 后写入
+  nodeport        SMALLINT UNSIGNED NULL     COMMENT 'K8s NodePort，Pingora 上游使用此端口',
   PRIMARY KEY (id),
   UNIQUE KEY uq_app_ports_nodeport (nodeport),   -- 全局唯一，防止端口冲突
   KEY idx_app_ports_app (app_id),
@@ -624,7 +624,7 @@ CREATE TABLE backup_schedules (
 | `platform_config` | `ldap_bind_password`, `ssh_private_key`, `jwt_secret` | 平台核心凭据 |
 | `users` | — | 密码存于 LLDAP，平台不存储 |
 | `totp_credentials` | `secret` | TOTP 种子 |
-| `load_balancers` | `api_token` | Caddy API 令牌 |
+| `load_balancers` | `api_token` | Pingora API 令牌 |
 | `apps` | `container_registry_pass`, `git_token` | 拉取凭据 |
 | `app_env_vars` | `value`（is_secret=1 时）| 应用 Secret 环境变量 |
 | `app_domains` | `basic_auth_pass` | HTTP Basic Auth 密码 |

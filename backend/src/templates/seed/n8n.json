@@ -1,0 +1,50 @@
+{
+  "slug": "n8n",
+  "name": "n8n",
+  "icon_url": "https://avatars.githubusercontent.com/u/45487711",
+  "category": "app",
+  "image_repository": "n8nio/n8n",
+  "image_tag": "latest",
+  "spec": {
+    "appModel": {
+      "name": "n8n",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 10,
+      "healthCheckFailureThreshold": 3,
+      "securityContextFsGroup": 1000
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 500,
+        "containerMountPath": "/home/node/.n8n",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 5678
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "key": "TZ",
+      "label": "Timezone",
+      "value": "Europe/Zurich",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": false
+    }
+  ]
+}

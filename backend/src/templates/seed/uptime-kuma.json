@@ -1,0 +1,41 @@
+{
+  "slug": "uptime-kuma",
+  "name": "Uptime Kuma",
+  "icon_url": "https://raw.githubusercontent.com/louislam/uptime-kuma/master/public/icon.svg",
+  "category": "app",
+  "image_repository": "louislam/uptime-kuma",
+  "image_tag": "latest",
+  "spec": {
+    "appModel": {
+      "name": "Uptime Kuma",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 10,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 200,
+        "containerMountPath": "/app/data",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 3001
+      }
+    ]
+  },
+  "inputs": []
+}

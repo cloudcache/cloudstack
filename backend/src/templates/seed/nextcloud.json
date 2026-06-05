@@ -1,0 +1,56 @@
+{
+  "slug": "nextcloud",
+  "name": "Nextcloud",
+  "icon_url": "https://avatars.githubusercontent.com/u/19211038",
+  "category": "app",
+  "image_repository": "nextcloud",
+  "image_tag": "stable",
+  "spec": {
+    "appModel": {
+      "name": "Nextcloud",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "SQLITE_DATABASE=nextcloud\n",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 10,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 5000,
+        "containerMountPath": "/var/www/html",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 80
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "key": "NEXTCLOUD_ADMIN_USER",
+      "label": "Admin Username",
+      "value": "admin",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": false
+    },
+    {
+      "key": "NEXTCLOUD_ADMIN_PASSWORD",
+      "label": "Admin Password",
+      "value": "",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": true
+    }
+  ]
+}

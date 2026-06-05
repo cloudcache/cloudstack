@@ -1,6 +1,6 @@
 
 
-<img  src="/public/quickstack-repo-heading.png" alt="QuickStack Logo" width="100%" />
+<img  src="/frontend/public/quickstack-repo-heading.png" alt="QuickStack Logo" width="100%" />
 
 QuickStack is a self-hosted PaaS solution designed to simplify the management of your applications on one or more virtual private servers (VPS).
 

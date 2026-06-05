@@ -1,0 +1,33 @@
+{
+  "slug": "apache-tika",
+  "name": "Apache Tika",
+  "icon_url": "https://tika.apache.org/tika.png",
+  "category": "app",
+  "image_repository": "apache/tika",
+  "image_tag": "latest-full",
+  "spec": {
+    "appModel": {
+      "name": "Apache Tika",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 10,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 9998
+      }
+    ]
+  },
+  "inputs": []
+}

@@ -97,65 +97,24 @@ pub async fn get_profile(
     })))
 }
 
-#[derive(Deserialize)]
-pub struct UpdateProfileRequest {
-    pub display_name: Option<String>,
-}
-
 pub async fn update_profile(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
-    Json(body): Json<UpdateProfileRequest>,
-) -> AppResult<impl IntoResponse> {
-    sqlx::query!(
-        r#"UPDATE users SET display_name = COALESCE(?, display_name) WHERE id = ?"#,
-        body.display_name,
-        auth.user_id,
-    )
-    .execute(&state.db)
-    .await?;
-
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    State(_state): State<AppState>,
+    Extension(_auth): Extension<AuthUser>,
+) -> AppResult<axum::http::StatusCode> {
+    Err(AppError::Forbidden(
+        "profile identity fields are admin-managed; users may only manage SSH keys".into(),
+    ))
 }
 
 // ─── Change password ──────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-pub struct ChangePasswordRequest {
-    pub current_password: String,
-    pub new_password: String,
-}
-
 pub async fn change_password(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
-    Json(body): Json<ChangePasswordRequest>,
-) -> AppResult<impl IntoResponse> {
-    if body.new_password.len() < 8 {
-        return Err(AppError::BadRequest("new password must be at least 8 characters".into()));
-    }
-    if body.current_password == body.new_password {
-        return Err(AppError::BadRequest("new password must differ from current".into()));
-    }
-
-    // Verify current password via LDAP bind
-    use crate::auth::ldap::LdapService;
-    let ldap = LdapService::new(state.config.ldap.clone());
-    ldap.authenticate(&auth.username, &body.current_password)
-        .await
-        .map_err(|_| AppError::Unauthorized("current password is incorrect".into()))?;
-
-    state.lldap.change_password(&auth.username, &body.new_password).await?;
-
-    // Revoke all other sessions so other devices re-authenticate
-    sqlx::query!(
-        r#"DELETE FROM user_sessions WHERE user_id = ?"#,
-        auth.user_id
-    )
-    .execute(&state.db)
-    .await?;
-
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    State(_state): State<AppState>,
+    Extension(_auth): Extension<AuthUser>,
+) -> AppResult<axum::http::StatusCode> {
+    Err(AppError::Forbidden(
+        "password changes are admin-managed; users may only manage SSH keys".into(),
+    ))
 }
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────
@@ -311,6 +270,60 @@ pub async fn get_ssh_key(
         "fingerprint": row.fingerprint,
         "created_at": row.created_at,
     })))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateSshKeyRequest {
+    pub name: Option<String>,
+    pub public_key: Option<String>,
+}
+
+pub async fn update_ssh_key(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(key_id): Path<String>,
+    Json(body): Json<UpdateSshKeyRequest>,
+) -> AppResult<impl IntoResponse> {
+    if body.name.as_deref().is_some_and(|name| name.trim().is_empty()) {
+        return Err(AppError::BadRequest("key name is required".into()));
+    }
+
+    let public_key = body.public_key.as_ref().map(|key| key.trim().to_string());
+    let fingerprint = if let Some(public_key) = public_key.as_deref() {
+        Some(
+            compute_ssh_fingerprint(public_key)
+                .ok_or_else(|| AppError::BadRequest("invalid SSH public key format".into()))?,
+        )
+    } else {
+        None
+    };
+
+    let result = sqlx::query(
+        r#"UPDATE user_ssh_keys
+           SET name = COALESCE(?, name),
+               public_key = COALESCE(?, public_key),
+               fingerprint = COALESCE(?, fingerprint)
+           WHERE id = ? AND user_id = ?"#,
+    )
+    .bind(body.name.as_deref().map(str::trim))
+    .bind(&public_key)
+    .bind(&fingerprint)
+    .bind(&key_id)
+    .bind(&auth.user_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::Database(ref de) if de.is_unique_violation() => {
+            AppError::Conflict("this SSH key is already added to your account".into())
+        }
+        other => AppError::Database(other),
+    })?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound(format!("ssh key {key_id}")));
+    }
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 pub async fn delete_ssh_key(

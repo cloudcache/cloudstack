@@ -1,0 +1,41 @@
+{
+  "slug": "open-webui",
+  "name": "Open WebUI",
+  "icon_url": "https://avatars.githubusercontent.com/u/158137808",
+  "category": "app",
+  "image_repository": "ollama/ollama",
+  "image_tag": "latest",
+  "spec": {
+    "appModel": {
+      "name": "Ollama",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "OLLAMA_HOST=0.0.0.0\nOLLAMA_ORIGINS=*\n",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 10,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 10000,
+        "containerMountPath": "/root/.ollama",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 11434
+      }
+    ]
+  },
+  "inputs": []
+}

@@ -1,0 +1,42 @@
+{
+  "slug": "redis",
+  "name": "Redis",
+  "icon_url": "https://cdn.simpleicons.org/redis",
+  "category": "database",
+  "image_repository": "redis",
+  "image_tag": "8-alpine",
+  "spec": {
+    "appModel": {
+      "name": "Redis",
+      "appType": "REDIS",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "NAMESPACE_ONLY",
+      "egressNetworkPolicy": "DENY_ALL",
+      "envVars": "",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 5,
+      "healthCheckFailureThreshold": 3,
+      "containerCommand": "redis-server"
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 200,
+        "containerMountPath": "/data",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 6379
+      }
+    ]
+  },
+  "inputs": []
+}

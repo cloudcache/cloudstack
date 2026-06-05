@@ -5,6 +5,30 @@ use std::collections::BTreeMap;
 
 use crate::{error::{AppError, AppResult}, state::AppState};
 
+/// Validates a MySQL identifier (database name or username).
+/// Only allows alphanumeric, underscore, and hyphen — rejects backticks, quotes,
+/// semicolons, and anything else that could break DDL statement boundaries.
+fn validate_mysql_identifier(name: &str, label: &str) -> AppResult<()> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(AppError::BadRequest(format!("{label} must be 1-64 characters")));
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(AppError::BadRequest(format!(
+            "{label} contains invalid characters (only alphanumeric, underscore, hyphen allowed)"
+        )));
+    }
+    Ok(())
+}
+
+/// Validates a MySQL password — rejects single quotes and backslashes
+/// that could break the IDENTIFIED BY clause.
+fn validate_mysql_password(pass: &str) -> AppResult<()> {
+    if pass.contains('\'') || pass.contains('\\') {
+        return Err(AppError::BadRequest("password contains disallowed characters".into()));
+    }
+    Ok(())
+}
+
 pub async fn provision_database(
     cluster_type: &str,
     host: &str,
@@ -17,7 +41,9 @@ pub async fn provision_database(
 ) -> AppResult<()> {
     match cluster_type {
         "MYSQL_GALERA" => provision_mysql(host, port, admin_user, admin_pass, db_name, db_user, db_password).await,
-        "POSTGRESQL" => provision_postgres(host, port, admin_user, admin_pass, db_name, db_user, db_password).await,
+        "POSTGRESQL" => Err(AppError::BadRequest(
+            "PostgreSQL provisioning is not yet supported. Only MYSQL_GALERA clusters can be used.".into(),
+        )),
         other => Err(AppError::BadRequest(format!("unknown cluster type: {other}"))),
     }
 }
@@ -31,6 +57,11 @@ async fn provision_mysql(
     db_user: &str,
     db_password: &str,
 ) -> AppResult<()> {
+    // Validate all identifiers to prevent SQL injection in DDL statements
+    validate_mysql_identifier(db_name, "database name")?;
+    validate_mysql_identifier(db_user, "database user")?;
+    validate_mysql_password(db_password)?;
+
     let url = format!("mysql://{}:{}@{}:{}/", admin_user, admin_pass, host, port);
     let pool = sqlx::MySqlPool::connect(&url)
         .await
@@ -64,31 +95,6 @@ async fn provision_mysql(
     Ok(())
 }
 
-async fn provision_postgres(
-    host: &str,
-    port: u16,
-    admin_user: &str,
-    admin_pass: &str,
-    db_name: &str,
-    db_user: &str,
-    db_password: &str,
-) -> AppResult<()> {
-    // Use a raw connection to postgres (sqlx PgPool)
-    // Connecting to 'postgres' default database
-    let url = format!(
-        "postgresql://{}:{}@{}:{}/postgres",
-        admin_user, admin_pass, host, port
-    );
-
-    // sqlx doesn't have native postgres support in this Cargo.toml (only mysql).
-    // We call psql via SSH or a pre-deployed sidecar. For now return an error
-    // indicating postgres provisioning requires an additional driver.
-    // TODO: add sqlx postgres feature when needed.
-    Err(AppError::Internal(
-        "PostgreSQL provisioning requires sqlx postgres feature (TODO)".into(),
-    ))
-}
-
 pub async fn drop_database(
     cluster_type: &str,
     host: &str,
@@ -100,7 +106,9 @@ pub async fn drop_database(
 ) -> AppResult<()> {
     match cluster_type {
         "MYSQL_GALERA" => drop_mysql(host, port, admin_user, admin_pass, db_name, db_user).await,
-        _ => Ok(()), // PostgreSQL: TODO
+        other => Err(AppError::Internal(format!(
+            "drop_database not implemented for cluster type: {other}"
+        ))),
     }
 }
 
@@ -112,6 +120,9 @@ async fn drop_mysql(
     db_name: &str,
     db_user: &str,
 ) -> AppResult<()> {
+    validate_mysql_identifier(db_name, "database name")?;
+    validate_mysql_identifier(db_user, "database user")?;
+
     let url = format!("mysql://{}:{}@{}:{}/", admin_user, admin_pass, host, port);
     let pool = sqlx::MySqlPool::connect(&url)
         .await
@@ -133,6 +144,7 @@ async fn drop_mysql(
 
 pub async fn create_db_secret(
     state: &AppState,
+    cluster_id: &str,
     namespace: &str,
     secret_name: &str,
     host: &str,
@@ -142,7 +154,7 @@ pub async fn create_db_secret(
     db_password: &str,
     cluster_type: &str,
 ) -> AppResult<()> {
-    let client = super::client(state).await?;
+    let client = super::client_for_cluster(state, cluster_id).await?;
     let secret_api: Api<Secret> = Api::namespaced(client, namespace);
 
     let scheme = if cluster_type.contains("POSTGRESQL") { "postgresql" } else { "mysql" };
@@ -174,8 +186,8 @@ pub async fn create_db_secret(
     Ok(())
 }
 
-pub async fn delete_db_secret(state: &AppState, namespace: &str, secret_name: &str) -> AppResult<()> {
-    let client = super::client(state).await?;
+pub async fn delete_db_secret(state: &AppState, cluster_id: &str, namespace: &str, secret_name: &str) -> AppResult<()> {
+    let client = super::client_for_cluster(state, cluster_id).await?;
     let secret_api: Api<Secret> = Api::namespaced(client, namespace);
     let _ = secret_api.delete(secret_name, &DeleteParams::default()).await;
     Ok(())

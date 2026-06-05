@@ -6,6 +6,7 @@ pub mod clusters_admin;
 pub mod databases;
 pub mod events;
 pub mod ipam;
+pub mod ldap;
 pub mod network;
 pub mod nodes;
 pub mod object_storage;
@@ -17,18 +18,22 @@ pub mod proxy_managers;
 pub mod quota;
 pub mod registries;
 pub mod subscriptions;
+pub mod templates;
+pub mod templates_deploy;
 pub mod domains;
 pub mod apps;
 pub mod stripe;
 pub mod users;
 
+use std::sync::Arc;
+
 use axum::{
     middleware,
     routing::{delete, get, post, put},
-    Router,
+    Extension, Router,
 };
 
-use crate::{auth::middleware::require_auth, state::AppState};
+use crate::{auth::middleware::require_auth, rate_limit::RateLimiter, state::AppState};
 
 pub fn router(state: AppState) -> Router<AppState> {
     let authed = Router::new()
@@ -46,7 +51,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/profile/sessions/all", delete(profile::revoke_all_sessions))
         .route("/profile/sessions/:id", delete(profile::revoke_session))
         .route("/profile/ssh-keys", get(profile::list_ssh_keys).post(profile::add_ssh_key))
-        .route("/profile/ssh-keys/:id", get(profile::get_ssh_key).delete(profile::delete_ssh_key))
+        .route("/profile/ssh-keys/:id", get(profile::get_ssh_key).put(profile::update_ssh_key).delete(profile::delete_ssh_key))
 
         // ── Plan catalogue (self) ─────────────────────────────────────────────
         .route("/plans", get(subscriptions::list_plans))
@@ -77,10 +82,12 @@ pub fn router(state: AppState) -> Router<AppState> {
 
         // ── Admin billing ─────────────────────────────────────────────────────
         .route("/admin/billing/wallets", get(billing::admin_list_wallets))
+        .route("/admin/billing/transactions", get(billing::admin_list_transactions))
         .route("/admin/billing/recharge", post(billing::admin_recharge))
         .route("/admin/billing/adjustment", post(billing::admin_adjust_balance))
         .route("/admin/billing/invoices", get(billing::admin_list_invoices).post(billing::admin_generate_invoice))
         .route("/admin/billing/invoices/:id/pay", post(billing::admin_mark_paid))
+        .route("/admin/billing/invoices/:id/void", post(billing::admin_void_invoice))
 
         // ── Network usage (user) ──────────────────────────────────────────────
         .route("/projects/:project_id/network-usage", get(billing::get_project_network_usage))
@@ -157,6 +164,17 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/projects/:project_id/apps/:app_id/backups/:backup_id",
             put(object_storage::update_backup).delete(object_storage::delete_backup))
 
+        // ── App templates (any user: list visible / fetch one) ───────────────
+        .route("/templates", get(templates::list_visible))
+        .route("/templates/:id", get(templates::get))
+        // ── Project-scoped templates (OWNER only) ────────────────────────────
+        .route("/projects/:project_id/templates", post(templates::project_create))
+        .route("/projects/:project_id/templates/:id",
+            put(templates::project_update).delete(templates::project_delete))
+        // ── Deploy an app from a template (resolves bindings) ────────────────
+        .route("/projects/:project_id/apps/from-template",
+            post(templates_deploy::deploy_from_template))
+
         // ── S3 targets (user: pick active targets for backup) ─────────────────
         .route("/s3-targets", get(object_storage::list_targets_user))
 
@@ -170,8 +188,6 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/projects/:project_id/network/allocations", get(network::list_project_allocations))
         .route("/projects/:project_id/apps/:app_id/network",
             get(network::get_app_network).delete(network::release_app_network))
-        .route("/projects/:project_id/apps/:app_id/network/reassign",
-            post(network::reassign_app_network))
 
         // ── Quota ─────────────────────────────────────────────────────────────
         .route("/projects/:project_id/quota", get(quota::get_project_quota))
@@ -214,6 +230,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
         // ── Databases ─────────────────────────────────────────────────────────
         .route("/projects/:project_id/databases", get(databases::list).post(databases::create))
+        .route("/database-clusters", get(databases::list_clusters_user))
         .route("/projects/:project_id/databases/:db_id", get(databases::get).delete(databases::delete_db))
         .route("/projects/:project_id/databases/:db_id/credentials", get(databases::credentials))
 
@@ -224,12 +241,16 @@ pub fn router(state: AppState) -> Router<AppState> {
         // ── Admin: K3s nodes ──────────────────────────────────────────────────
         .route("/admin/nodes", get(nodes::list).post(nodes::add))
         .route("/admin/nodes/metrics/aggregate", get(nodes::metrics_aggregate))
-        .route("/admin/nodes/:id", get(nodes::get).delete(nodes::delete_node))
+        .route("/admin/nodes/:id", get(nodes::get).put(nodes::update_node).delete(nodes::delete_node))
+        .route("/admin/nodes/:id/reprovision", post(nodes::reprovision))
         .route("/admin/nodes/:id/labels", put(nodes::update_labels))
         .route("/admin/nodes/:id/health", get(nodes::health))
         .route("/admin/nodes/:id/metrics", get(nodes::metrics))
         .route("/admin/nodes/:id/cordon", post(nodes::cordon))
         .route("/admin/nodes/:id/uncordon", post(nodes::uncordon))
+        .route("/admin/nodes/:id/provision-logs", get(nodes::provision_logs))
+        .route("/admin/nodes/:id/provision-cancel", post(nodes::provision_cancel))
+        .route("/admin/nodes/:id/provision-stream", get(nodes::provision_stream))
 
         // ── Admin: proxy managers (independent LB nodes) ──────────────────────
         .route("/admin/proxy-managers", get(proxy_managers::list).post(proxy_managers::create))
@@ -245,6 +266,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/admin/subscriptions/:id", put(subscriptions::admin_update_subscription).delete(subscriptions::admin_cancel_subscription))
         .route("/admin/users/:id/subscription", get(subscriptions::admin_get_user_subscription).post(subscriptions::admin_assign_plan))
 
+        // ── Admin: LDAP ───────────────────────────────────────────────────────
+        .route("/admin/ldap/test-connection", post(ldap::test_connection))
+        .route("/admin/ldap/sync", post(ldap::sync))
+
         // ── Admin: resource pools ─────────────────────────────────────────────
         .route("/admin/resource-pools", get(pools::list).post(pools::create))
         .route("/admin/resource-pools/:id", get(pools::get).put(pools::update).delete(pools::delete))
@@ -252,6 +277,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         // ── Admin: K3s clusters ───────────────────────────────────────────────
         .route("/admin/clusters", get(clusters_admin::list).post(clusters_admin::create))
         .route("/admin/clusters/:id", get(clusters_admin::get).put(clusters_admin::update).delete(clusters_admin::delete))
+        .route("/admin/templates", post(templates::admin_create))
+        .route("/admin/templates/:id", put(templates::admin_update).delete(templates::admin_delete))
 
         // ── Admin: cluster-wide storage config ───────────────────────────────
         .route("/admin/cluster/storage", get(cluster::get_storage).put(cluster::update_storage))
@@ -281,19 +308,41 @@ pub fn router(state: AppState) -> Router<AppState> {
 
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
-    Router::new()
-        // Public auth
+    // Rate limiters for public endpoints
+    // Auth: 20 req / 60 sec per IP (login, register, forgot/reset password)
+    let auth_limiter = RateLimiter::new(20, std::time::Duration::from_secs(60));
+    // Webhooks: 30 req / 60 sec per IP (deploy trigger, stripe)
+    let webhook_limiter = RateLimiter::new(30, std::time::Duration::from_secs(60));
+
+    let public_auth = Router::new()
         .route("/auth/login", post(auth::login))
+        .route("/auth/refresh", post(auth::refresh))
         .route("/auth/register", post(auth::register))
         .route("/auth/registration-status", get(auth::registration_status))
         .route("/auth/forgot-password", post(auth::forgot_password))
         .route("/auth/reset-password", post(auth::reset_password))
-        .nest("/api/v1", authed)
-        // Webhooks (public, validated inside handler)
+        .layer(middleware::from_fn(crate::rate_limit::rate_limit))
+        .layer(Extension(Arc::clone(&auth_limiter)));
+
+    let public_webhooks = Router::new()
         .route("/webhooks/:webhook_id", post(apps::webhook))
         .route("/stripe/webhook", post(stripe::stripe_webhook))
+        .layer(middleware::from_fn(crate::rate_limit::rate_limit))
+        .layer(Extension(Arc::clone(&webhook_limiter)));
+
+    Router::new()
+        .merge(public_auth)
+        .nest("/api/v1", authed)
+        .merge(public_webhooks)
         // Maintenance page served by pingora for paused apps
         .route("/_qs/maintenance", get(maintenance_handler))
+        // Catch panics in any handler — return 500 JSON instead of crashing the process
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(|_| {
+            axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error":{"code":"INTERNAL_ERROR","message":"internal server error"}})),
+            ))
+        }))
 }
 
 async fn maintenance_handler() -> impl axum::response::IntoResponse {

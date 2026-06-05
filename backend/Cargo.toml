@@ -10,11 +10,13 @@ name = "quickstack"
 path = "src/main.rs"
 
 [dependencies]
+# Templating for app-template config-file rendering (Phase 2 deps injection)
+minijinja = "2"
 # Web framework
 axum = { version = "0.7", features = ["ws", "macros"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 tower = { version = "0.4", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "fs", "catch-panic"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7" }
 hyper = { version = "1", features = ["full"] }
@@ -54,7 +56,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 # HTTP client (for pingora API + LLDAP admin API)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Email
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
@@ -62,6 +64,9 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 # Config
 config = "0.14"
 toml = "0.8"
+
+# WebSocket client (for Docker agent terminal proxy)
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 
 # Async utilities
 futures = "0.3"

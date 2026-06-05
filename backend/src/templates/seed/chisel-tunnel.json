@@ -1,0 +1,49 @@
+{
+  "slug": "chisel-tunnel",
+  "name": "Chisel Tunnel",
+  "icon_url": "chisel.svg",
+  "category": "app",
+  "image_repository": "jpillora/chisel",
+  "image_tag": "latest",
+  "spec": {
+    "appModel": {
+      "name": "Chisel Tunnel",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 10,
+      "healthCheckFailureThreshold": 3,
+      "containerArgs": "[\"server\", \"--keyfile\", \"/etc/chisel/chisel.key\", \"--auth\", \"$(CHISEL_USER):$(CHISEL_PASSWORD)\", \"--reverse\"]"
+    },
+    "appDomains": [],
+    "appVolumes": [],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 8080
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "key": "CHISEL_USER",
+      "label": "Username",
+      "value": "chisel",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": false
+    },
+    {
+      "key": "CHISEL_PASSWORD",
+      "label": "Password",
+      "value": "",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": true
+    }
+  ]
+}

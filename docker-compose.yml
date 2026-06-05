@@ -97,7 +97,7 @@ services:
   # ── Next.js frontend ──────────────────────────────────────────────────────────
   frontend:
     build:
-      context: .
+      context: ./frontend
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:

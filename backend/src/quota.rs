@@ -8,7 +8,6 @@
 /// Flow:
 ///   deploy/scale/resume → check_deploy_allowed() → reject with 429 if hard limit exceeded
 ///   background task     → enforce_project() → suspend running apps until under limit
-
 use uuid::Uuid;
 
 use crate::{
@@ -33,20 +32,24 @@ pub async fn load_thresholds(state: &AppState) -> QuotaThresholds {
         let k = key.to_string();
         let d = default.to_string();
         async move {
-            sqlx::query_scalar!(
-                r#"SELECT `value` FROM platform_config WHERE `key` = ?"#, k
-            )
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or(d)
+            sqlx::query_scalar!(r#"SELECT `value` FROM platform_config WHERE `key` = ?"#, k)
+                .fetch_optional(&db)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(d)
         }
     };
     QuotaThresholds {
-        warn_pct: get("quota_warn_pct",    "80").await.parse().unwrap_or(DEFAULT_WARN_PCT),
-        hard_pct: get("quota_hard_pct",    "100").await.parse().unwrap_or(DEFAULT_HARD_PCT),
-        enabled:  get("quota_check_enabled", "1").await != "0",
+        warn_pct: get("quota_warn_pct", "80")
+            .await
+            .parse()
+            .unwrap_or(DEFAULT_WARN_PCT),
+        hard_pct: get("quota_hard_pct", "100")
+            .await
+            .parse()
+            .unwrap_or(DEFAULT_HARD_PCT),
+        enabled: get("quota_check_enabled", "1").await != "0",
     }
 }
 
@@ -93,7 +96,9 @@ impl QuotaStatus {
 }
 
 fn pct(used: i64, limit: i64) -> f32 {
-    if limit == 0 { return 0.0; }   // 0 = unlimited
+    if limit == 0 {
+        return 0.0;
+    } // 0 = unlimited
     (used as f32 / limit as f32) * 100.0
 }
 
@@ -121,12 +126,18 @@ pub async fn compute_usage(state: &AppState, project_id: &str) -> AppResult<Proj
     use rust_decimal::prelude::ToPrimitive;
     Ok(ProjectUsage {
         cpu_mcores: row.cpu_mcores.to_i64().unwrap_or(0),
-        mem_mb:     row.mem_mb.to_i64().unwrap_or(0),
-        app_count:  row.app_count,
+        mem_mb: row.mem_mb.to_i64().unwrap_or(0),
+        app_count: row.app_count,
     })
 }
 
 /// Quota limits configured on the project (0 = unlimited).
+///
+/// Source of truth is `projects.quota_*` columns. These are set by:
+///   1. Subscription plan activation → `allocate_plan_to_default_project()`
+///   2. Admin manual override → `PUT /admin/projects/:id`
+/// Admin overrides are intentional and take precedence until the next
+/// subscription change. The quota enforcer always reads from `projects`.
 pub async fn compute_quota(state: &AppState, project_id: &str) -> AppResult<ProjectQuota> {
     let row = sqlx::query!(
         r#"SELECT quota_cpu_mcores, quota_mem_mb, quota_apps
@@ -139,8 +150,8 @@ pub async fn compute_quota(state: &AppState, project_id: &str) -> AppResult<Proj
 
     Ok(ProjectQuota {
         cpu_mcores: row.quota_cpu_mcores as i64,
-        mem_mb:     row.quota_mem_mb as i64,
-        app_count:  row.quota_apps as i64,
+        mem_mb: row.quota_mem_mb as i64,
+        app_count: row.quota_apps as i64,
     })
 }
 
@@ -150,20 +161,26 @@ pub async fn check(state: &AppState, project_id: &str) -> AppResult<QuotaStatus>
     let quota = compute_quota(state, project_id).await?;
 
     let cpu_pct = pct(usage.cpu_mcores, quota.cpu_mcores);
-    let mem_pct = pct(usage.mem_mb,     quota.mem_mb);
-    let app_pct = pct(usage.app_count,  quota.app_count);
+    let mem_pct = pct(usage.mem_mb, quota.mem_mb);
+    let app_pct = pct(usage.app_count, quota.app_count);
 
     let exceeded = |p: f32, limit: i64| thresholds.enabled && limit > 0 && p >= thresholds.hard_pct;
-    let warned   = |p: f32, limit: i64| thresholds.enabled && limit > 0 && p >= thresholds.warn_pct && p < thresholds.hard_pct;
+    let warned = |p: f32, limit: i64| {
+        thresholds.enabled && limit > 0 && p >= thresholds.warn_pct && p < thresholds.hard_pct
+    };
 
     Ok(QuotaStatus {
-        cpu_warned:   warned(cpu_pct,   quota.cpu_mcores),
-        mem_warned:   warned(mem_pct,   quota.mem_mb),
-        app_warned:   warned(app_pct,   quota.app_count),
+        cpu_warned: warned(cpu_pct, quota.cpu_mcores),
+        mem_warned: warned(mem_pct, quota.mem_mb),
+        app_warned: warned(app_pct, quota.app_count),
         cpu_exceeded: exceeded(cpu_pct, quota.cpu_mcores),
         mem_exceeded: exceeded(mem_pct, quota.mem_mb),
         app_exceeded: exceeded(app_pct, quota.app_count),
-        cpu_pct, mem_pct, app_pct, usage, quota,
+        cpu_pct,
+        mem_pct,
+        app_pct,
+        usage,
+        quota,
     })
 }
 
@@ -179,26 +196,32 @@ pub async fn check_deploy_allowed(
     extra_app_count: i64,
 ) -> AppResult<()> {
     let thresholds = load_thresholds(state).await;
-    if !thresholds.enabled { return Ok(()); }
+    if !thresholds.enabled {
+        return Ok(());
+    }
 
     let usage = compute_usage(state, project_id).await?;
     let quota = compute_quota(state, project_id).await?;
 
     let check_dim = |dim: &str, used: i64, extra: i64, limit: i64| -> AppResult<()> {
-        if limit == 0 { return Ok(()); }  // unlimited
+        if limit == 0 {
+            return Ok(());
+        } // unlimited
         let projected_pct = pct(used + extra, limit);
         if projected_pct >= thresholds.hard_pct {
             return Err(AppError::QuotaExceeded(format!(
                 "{dim} quota exceeded: {}/{} (projected {:.0}%)",
-                used + extra, limit, projected_pct
+                used + extra,
+                limit,
+                projected_pct
             )));
         }
         Ok(())
     };
 
-    check_dim("CPU",    usage.cpu_mcores, extra_cpu_mcores, quota.cpu_mcores)?;
-    check_dim("Memory", usage.mem_mb,     extra_mem_mb,     quota.mem_mb)?;
-    check_dim("Apps",   usage.app_count,  extra_app_count,  quota.app_count)?;
+    check_dim("CPU", usage.cpu_mcores, extra_cpu_mcores, quota.cpu_mcores)?;
+    check_dim("Memory", usage.mem_mb, extra_mem_mb, quota.mem_mb)?;
+    check_dim("Apps", usage.app_count, extra_app_count, quota.app_count)?;
 
     Ok(())
 }
@@ -215,7 +238,9 @@ pub async fn enforce_project(
     reason: &str,
 ) -> AppResult<Vec<String>> {
     let thresholds = load_thresholds(state).await;
-    if !thresholds.enabled { return Ok(vec![]); }
+    if !thresholds.enabled {
+        return Ok(vec![]);
+    }
 
     // Fetch RUNNING apps for this project, heaviest first
     let apps = sqlx::query!(
@@ -263,9 +288,16 @@ pub async fn enforce_project(
         .await?;
 
         record_violation(
-            state, project_id, Some(&app.id), "cpu_mcores",
-            app.cpu_cost, 0, 100.0, "suspend",
-        ).await;
+            state,
+            project_id,
+            Some(&app.id),
+            "cpu_mcores",
+            app.cpu_cost,
+            0,
+            100.0,
+            "suspend",
+        )
+        .await;
 
         suspended_names.push(app.name.clone());
         tracing::warn!(
@@ -284,21 +316,22 @@ async fn suspend_app_k8s(
     app_id: &str,
     app_name: &str,
 ) -> AppResult<()> {
-    let ns = sqlx::query_scalar!(
-        r#"SELECT name FROM projects WHERE id = ?"#, project_id
-    )
-    .fetch_one(&state.db)
-    .await?;
+    let ns = sqlx::query_scalar!(r#"SELECT name FROM projects WHERE id = ?"#, project_id)
+        .fetch_one(&state.db)
+        .await?;
 
+    // Use the app's bound cluster_id (set by resolve_cluster_for_app on first deploy)
     let cluster_id = sqlx::query_scalar!(
-        r#"SELECT id FROM clusters
-           WHERE pool_id = (SELECT pool_id FROM apps WHERE id = ?)
-             AND is_active = 1
-           ORDER BY created_at LIMIT 1"#,
+        r#"SELECT COALESCE(cluster_id,
+             (SELECT id FROM clusters
+              WHERE pool_id = a.pool_id AND is_active = 1
+              ORDER BY created_at LIMIT 1))
+           FROM apps a WHERE a.id = ?"#,
         app_id
     )
     .fetch_optional(&state.db)
     .await?
+    .flatten()
     .ok_or_else(|| AppError::Internal("no cluster for app".into()))?;
 
     crate::k8s::deployment::scale_deployment(state, &cluster_id, &ns, app_name, 0).await
@@ -321,7 +354,14 @@ pub async fn record_violation(
         r#"INSERT INTO quota_violations
              (id, project_id, app_id, dimension, used_value, quota_value, pct_used, action)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
-        id, project_id, app_id, dimension, used, quota, pct_used, action
+        id,
+        project_id,
+        app_id,
+        dimension,
+        used,
+        quota,
+        pct_used,
+        action
     )
     .execute(&state.db)
     .await;
@@ -332,7 +372,9 @@ pub async fn record_violation(
 /// Runs once: checks every project with active apps and suspends any that are over quota.
 pub async fn run_enforcer(state: &AppState) -> AppResult<()> {
     let thresholds = load_thresholds(state).await;
-    if !thresholds.enabled { return Ok(()); }
+    if !thresholds.enabled {
+        return Ok(());
+    }
 
     let projects = sqlx::query_scalar!(
         r#"SELECT DISTINCT project_id FROM apps
@@ -351,7 +393,8 @@ pub async fn run_enforcer(state: &AppState) -> AppResult<()> {
         };
 
         if status.any_exceeded() {
-            let suspended = enforce_project(state, &project_id, "quota_exceeded").await
+            let suspended = enforce_project(state, &project_id, "quota_exceeded")
+                .await
                 .unwrap_or_default();
             if !suspended.is_empty() {
                 tracing::warn!(project_id, apps = ?suspended, "quota enforcer: suspended apps");
@@ -361,10 +404,16 @@ pub async fn run_enforcer(state: &AppState) -> AppResult<()> {
         } else if status.any_warned() {
             // Record warn event (non-blocking; ignore duplicate inserts via the PK)
             record_violation(
-                state, &project_id, None, "app_count",
-                status.usage.app_count, status.quota.app_count,
-                status.app_pct, "warn",
-            ).await;
+                state,
+                &project_id,
+                None,
+                "app_count",
+                status.usage.app_count,
+                status.quota.app_count,
+                status.app_pct,
+                "warn",
+            )
+            .await;
         }
     }
 

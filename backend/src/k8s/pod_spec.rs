@@ -392,7 +392,7 @@ pub async fn list_pods_for_app(
     let pod_api: Api<Pod> = Api::namespaced(client, namespace);
 
     let lp = ListParams::default()
-        .labels(&format!("app={app_name}"));
+        .labels(&format!("qs-app={app_name}"));
 
     let pod_list = pod_api.list(&lp).await
         .map_err(|e| crate::error::AppError::Kubernetes(e.into()))?;

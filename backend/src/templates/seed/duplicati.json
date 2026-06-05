@@ -1,0 +1,48 @@
+{
+  "slug": "duplicati",
+  "name": "Duplicati",
+  "icon_url": "https://avatars.githubusercontent.com/u/2245683?s=200&v=4",
+  "category": "app",
+  "image_repository": "duplicati/duplicati",
+  "image_tag": "latest",
+  "spec": {
+    "appModel": {
+      "name": "Duplicati",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 10,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 100,
+        "containerMountPath": "/config",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      },
+      {
+        "size": 800,
+        "containerMountPath": "/backups",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 8200
+      }
+    ]
+  },
+  "inputs": []
+}

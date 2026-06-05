@@ -1,0 +1,33 @@
+{
+  "slug": "draw-io",
+  "name": "draw.io",
+  "icon_url": "https://raw.githubusercontent.com/jgraph/drawio/dev/src/main/webapp/images/drawlogo.svg",
+  "category": "app",
+  "image_repository": "jgraph/drawio",
+  "image_tag": "latest",
+  "spec": {
+    "appModel": {
+      "name": "draw.io",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 5,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 8080
+      }
+    ]
+  },
+  "inputs": []
+}

@@ -1,6 +1,9 @@
 [server]
 host = "0.0.0.0"
 port = 3001
+# Allowed CORS origins. If empty, all origins are allowed (dev mode — logs a warning).
+# In production, set to your frontend URL(s): ["https://console.example.com"]
+cors_origins = []
 
 [database]
 url = "mysql://root@localhost/quickstack"
@@ -10,9 +13,9 @@ connect_timeout_secs = 10
 
 [ldap]
 url = "ldap://localhost:3890"
-base_dn = "dc=quickstack,dc=local"
-bind_dn = "cn=admin,dc=quickstack,dc=local"
-bind_password = "admin"
+base_dn = "dc=example,dc=com"
+bind_dn = "uid=admin,ou=people,dc=example,dc=com"
+bind_password = "SuperSecretPassword123"
 user_ou = "ou=people"
 group_ou = "ou=groups"
 user_filter = "(&(objectClass=person)(uid={}))"
@@ -25,7 +28,8 @@ pool_size = 5
 
 [jwt]
 # secret loaded from platform_config.jwt_secret (encrypted) at runtime
-expiry_hours = 24
+expiry_hours = 2             # access token: 2 hours
+refresh_expiry_hours = 168   # refresh token: 7 days
 
 [crypto]
 # 32-byte base64 key — CHANGE IN PRODUCTION (generate: openssl rand -base64 32)
@@ -54,7 +58,7 @@ secret_key = ""
 # Create in Stripe Dashboard → Developers → Webhooks → Add endpoint.
 # Listen for: checkout.session.completed
 webhook_secret = ""
-# ISO 4217 currency code (lowercase). Must match your Stripe account's settlement currency.
+# Currency code (lowercase). Only "cny" and "usd" are accepted.
 currency = "cny"
 # Predefined top-up amounts in the smallest currency unit (分 for CNY, cents for USD).
 # Example: [1000, 5000, 10000, 50000] = ¥10, ¥50, ¥100, ¥500

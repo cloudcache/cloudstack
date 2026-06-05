@@ -1,0 +1,63 @@
+{
+  "slug": "docmost",
+  "name": "Docmost",
+  "icon_url": "https://cdn-1.webcatalog.io/catalog/docmost/docmost-icon-filled-256.webp",
+  "category": "app",
+  "image_repository": "postgres",
+  "image_tag": "18-alpine",
+  "spec": {
+    "appModel": {
+      "name": "Docmost PostgreSQL",
+      "appType": "POSTGRES",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "NAMESPACE_ONLY",
+      "egressNetworkPolicy": "DENY_ALL",
+      "envVars": "PGDATA=/var/lib/qs-postgres/data\n",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 5,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 300,
+        "containerMountPath": "/var/lib/qs-postgres",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 5432
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "key": "POSTGRES_DB",
+      "label": "Database Name",
+      "value": "docmost",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": false
+    },
+    {
+      "key": "POSTGRES_USER",
+      "label": "Database User",
+      "value": "docmost",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": false
+    },
+    {
+      "key": "POSTGRES_PASSWORD",
+      "label": "Database Password",
+      "value": "",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": true
+    }
+  ]
+}

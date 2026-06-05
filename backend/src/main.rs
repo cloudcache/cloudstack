@@ -6,6 +6,7 @@ mod billing;
 mod config;
 mod crypto;
 mod db;
+mod docker;
 mod error;
 mod k8s;
 mod lldap;
@@ -13,8 +14,11 @@ mod mailer;
 mod metrics;
 mod proxy;
 mod quota;
+mod rate_limit;
 mod ssh;
+mod templates;
 mod state;
+mod storage_guard;
 
 use std::net::SocketAddr;
 
@@ -82,6 +86,11 @@ async fn main() -> anyhow::Result<()> {
     // ─── AppState ────────────────────────────────────────────────────────────
     let state = AppState::new(db.clone(), cfg.clone(), crypto.clone(), jwt_secret, lldap, mailer, metrics_store);
 
+    // ─── Seed PUBLIC app templates if app_templates table is empty ───────────
+    if let Err(e) = templates::seed_if_missing(&state).await {
+        tracing::warn!("template seed failed: {e}");
+    }
+
     // ─── Pingora client ──────────────────────────────────────────────────────
     if let Some(pm) = load_proxy_manager(&db, &crypto).await? {
         *state.pingora.write().await = Some(pm);
@@ -116,6 +125,87 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // ─── Clean up expired tokens (hourly) ───────────────────────────────────
+    {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                let _ = sqlx::query("DELETE FROM refresh_tokens WHERE expires_at < NOW()")
+                    .execute(&db).await;
+                let _ = sqlx::query("DELETE FROM user_sessions WHERE expires_at < NOW()")
+                    .execute(&db).await;
+            }
+        });
+    }
+
+    // ─── Recover stale PROVISIONING nodes on startup ──────────────────────────
+    // If the process crashed mid-provision, nodes remain stuck in PROVISIONING.
+    // Mark any node whose last provision log is older than 15 minutes as failed.
+    {
+        let db = state.db.clone();
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM cluster_nodes WHERE node_status = 'PROVISIONING'",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap_or_default();
+
+        for nid in &rows {
+            // Count log rows for this node's current attempt
+            let log_count: i64 = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM node_provision_logs WHERE node_id = ?",
+            )
+            .bind(nid)
+            .fetch_one(&db)
+            .await
+            .unwrap_or(0);
+
+            // Case 1: No logs at all — legacy node or provision never started
+            // Case 2: Has RUNNING logs older than 15 min — stalled mid-provision
+            let stale = if log_count == 0 {
+                true
+            } else {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM node_provision_logs \
+                     WHERE node_id = ? AND status = 'RUNNING' \
+                     AND started_at < DATE_SUB(NOW(), INTERVAL 15 MINUTE)",
+                )
+                .bind(nid)
+                .fetch_one(&db)
+                .await
+                .unwrap_or(0)
+                > 0
+            };
+
+            if stale {
+                tracing::warn!("recovering stale PROVISIONING node {nid}");
+                let _ = sqlx::query(
+                    "UPDATE cluster_nodes SET node_status = 'NOT_READY', \
+                     provision_step = 'failed', \
+                     provision_error = 'process restarted during provisioning' \
+                     WHERE id = ? AND node_status = 'PROVISIONING'"
+                )
+                .bind(nid)
+                .execute(&db)
+                .await;
+                // Mark any RUNNING log rows as FAILED too
+                let _ = sqlx::query(
+                    "UPDATE node_provision_logs SET status = 'FAILED', finished_at = NOW() \
+                     WHERE node_id = ? AND status = 'RUNNING'"
+                )
+                .bind(nid)
+                .execute(&db)
+                .await;
+            }
+        }
+
+        if !rows.is_empty() {
+            tracing::info!("checked {} PROVISIONING node(s) on startup", rows.len());
+        }
+    }
+
     // ─── Background app status sync (30-sec interval) ────────────────────────
     // Watches K8s for DEPLOYING apps and transitions them to RUNNING / FAILED.
     {
@@ -125,7 +215,10 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 if let Err(e) = k8s::sync_app_statuses(&sync_state).await {
-                    tracing::debug!("status sync: {e}");
+                    tracing::debug!("status sync (k8s): {e}");
+                }
+                if let Err(e) = docker::sync_docker_app_statuses(&sync_state).await {
+                    tracing::debug!("status sync (docker): {e}");
                 }
             }
         });
@@ -144,21 +237,81 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // ─── Background LDAP user sync ───────────────────────────────────────────
+    // Keeps the local user index aligned with LDAP after LDAP has been configured.
+    if cfg.ldap.sync_interval_secs > 0 && !cfg.ldap.url.trim().is_empty() {
+        let ldap_state = state.clone();
+        let interval_secs = cfg.ldap.sync_interval_secs;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+            loop {
+                interval.tick().await;
+                match auth::ldap_sync::sync_ldap_users(&ldap_state.db, &ldap_state.config.ldap).await {
+                    Ok(report) => {
+                        if report.conflicts.is_empty() {
+                            tracing::debug!(
+                                scanned = report.scanned,
+                                inserted = report.inserted,
+                                updated = report.updated,
+                                skipped = report.skipped,
+                                "LDAP user sync completed"
+                            );
+                        } else {
+                            tracing::warn!(
+                                scanned = report.scanned,
+                                inserted = report.inserted,
+                                updated = report.updated,
+                                skipped = report.skipped,
+                                conflicts = report.conflicts.len(),
+                                "LDAP user sync completed with conflicts"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::debug!("LDAP user sync skipped: {e}"),
+                }
+            }
+        });
+    }
+
     // ─── Router ──────────────────────────────────────────────────────────────
+    // ─── CORS ─────────────────────────────────────────────────────────────
+    // Read allowed origins from config file [server].cors_origins.
+    // Falls back to permissive mode only when the list is empty (dev mode).
+    let cors = {
+        let origins: Vec<String> = cfg.server.cors_origins.iter()
+            .map(|o| o.trim().trim_end_matches('/').to_string())
+            .filter(|o| !o.is_empty())
+            .collect();
+
+        let cors_base = CorsLayer::new()
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::ACCEPT,
+            ]);
+
+        if origins.is_empty() {
+            tracing::warn!("server.cors_origins is empty — CORS allows all origins (dev mode)");
+            cors_base.allow_origin(tower_http::cors::Any)
+        } else {
+            let allowed: Vec<axum::http::HeaderValue> = origins.iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            tracing::info!("CORS allowed origins: {:?}", origins);
+            cors_base.allow_origin(allowed)
+        }
+    };
+
     let app = api::router(state.clone())
         .layer(TraceLayer::new_for_http())
-        .layer(
-            CorsLayer::new()
-                .allow_origin(tower_http::cors::Any)
-                .allow_methods([
-                    axum::http::Method::GET,
-                    axum::http::Method::POST,
-                    axum::http::Method::PUT,
-                    axum::http::Method::DELETE,
-                    axum::http::Method::OPTIONS,
-                ])
-                .allow_headers(tower_http::cors::Any),
-        )
+        .layer(cors)
         .with_state(state);
 
     // ─── Listen ──────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    auth::middleware::AuthUser,
+    auth::{ldap::LdapService, middleware::AuthUser},
     error::{AppError, AppResult},
     state::AppState,
 };
@@ -239,6 +239,7 @@ pub async fn create(
 
 #[derive(Deserialize)]
 pub struct UpdateUserRequest {
+    pub username: Option<String>,
     pub display_name: Option<String>,
     pub email: Option<String>,
     pub is_active: Option<bool>,
@@ -260,36 +261,91 @@ pub async fn update(
         }
     }
 
-    // Fetch current username for LLDAP sync
-    let username = sqlx::query_scalar!(r#"SELECT username FROM users WHERE id = ?"#, id)
+    // Fetch current identity for LLDAP sync / ownership checks
+    let current = sqlx::query(r#"SELECT username, ldap_dn FROM users WHERE id = ?"#)
+        .bind(&id)
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("user {id}")))?;
+    let current_username: String = sqlx::Row::get(&current, "username");
+    let current_ldap_dn: Option<String> = sqlx::Row::get(&current, "ldap_dn");
 
-    sqlx::query!(
+    if let Some(username) = body.username.as_deref() {
+        if username.trim().is_empty() {
+            return Err(AppError::BadRequest("username is required".into()));
+        }
+    }
+
+    if let Some(email) = body.email.as_deref() {
+        if !email.contains('@') {
+            return Err(AppError::BadRequest("invalid email".into()));
+        }
+    }
+
+    if body.username.is_some() || body.email.is_some() {
+        let conflict: Option<String> = sqlx::query_scalar(
+            r#"SELECT id FROM users
+               WHERE id <> ? AND ((? IS NOT NULL AND username = ?) OR (? IS NOT NULL AND email = ?))
+               LIMIT 1"#,
+        )
+        .bind(&id)
+        .bind(&body.username)
+        .bind(&body.username)
+        .bind(&body.email)
+        .bind(&body.email)
+        .fetch_optional(&state.db)
+        .await?;
+
+        if conflict.is_some() {
+            return Err(AppError::Conflict("username or email already exists".into()));
+        }
+    }
+
+    let mut new_ldap_dn = None;
+    if let Some(ref current_dn) = current_ldap_dn {
+        let ldap_username = body.username.as_deref().unwrap_or(&current_username);
+        if body.username.as_deref().is_some_and(|u| u != current_username) {
+            let ldap = LdapService::new(state.config.ldap.clone());
+            new_ldap_dn = Some(ldap.rename_user(current_dn, ldap_username).await?);
+        }
+
+        if body.username.is_some() || body.display_name.is_some() || body.email.is_some() {
+            state
+                .lldap
+                .update_user(
+                    ldap_username,
+                    body.display_name.as_deref(),
+                    body.email.as_deref(),
+                )
+                .await?;
+        }
+    }
+
+    sqlx::query(
         r#"UPDATE users
-           SET display_name    = COALESCE(?, display_name),
+           SET username        = COALESCE(?, username),
+               display_name    = COALESCE(?, display_name),
                email           = COALESCE(?, email),
+               ldap_dn         = COALESCE(?, ldap_dn),
                is_active       = COALESCE(?, is_active),
                is_global_admin = COALESCE(?, is_global_admin)
            WHERE id = ?"#,
-        body.display_name,
-        body.email,
-        body.is_active.map(|v| v as i8),
-        body.is_global_admin.map(|v| v as i8),
-        id,
     )
+    .bind(&body.username)
+    .bind(&body.display_name)
+    .bind(&body.email)
+    .bind(&new_ldap_dn)
+    .bind(body.is_active.map(|v| v as i8))
+    .bind(body.is_global_admin.map(|v| v as i8))
+    .bind(&id)
     .execute(&state.db)
-    .await?;
-
-    // Sync display_name / email changes to LLDAP (best-effort)
-    if body.display_name.is_some() || body.email.is_some() {
-        let _ = state.lldap.update_user(
-            &username,
-            body.display_name.as_deref(),
-            body.email.as_deref(),
-        ).await;
-    }
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::Database(ref de) if de.is_unique_violation() => {
+            AppError::Conflict("username or email already exists".into())
+        }
+        other => AppError::Database(other),
+    })?;
 
     // If account was deactivated, revoke all sessions immediately
     if body.is_active == Some(false) {

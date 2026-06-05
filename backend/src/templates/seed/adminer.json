@@ -1,0 +1,33 @@
+{
+  "slug": "adminer",
+  "name": "Adminer",
+  "icon_url": "https://cdn.simpleicons.org/adminer",
+  "category": "app",
+  "image_repository": "adminer",
+  "image_tag": "latest",
+  "spec": {
+    "appModel": {
+      "name": "Adminer",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "ADMINER_DEFAULT_SERVER=db\n",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 10,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 8080
+      }
+    ]
+  },
+  "inputs": []
+}

@@ -1,0 +1,44 @@
+{
+  "slug": "gitea",
+  "name": "Gitea",
+  "icon_url": "https://raw.githubusercontent.com/go-gitea/gitea/main/assets/logo.svg",
+  "category": "app",
+  "image_repository": "gitea/gitea",
+  "image_tag": "latest",
+  "spec": {
+    "appModel": {
+      "name": "Gitea",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "USER_UID=1000\nUSER_GID=1000\nGITEA__database__DB_TYPE=sqlite3\n",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 10,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 2000,
+        "containerMountPath": "/data",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 3000
+      },
+      {
+        "port": 22
+      }
+    ]
+  },
+  "inputs": []
+}

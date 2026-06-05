@@ -18,6 +18,10 @@ pub struct Config {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// Allowed CORS origins (e.g. ["https://console.example.com"]).
+    /// If empty, all origins are allowed (dev mode only — logs a warning).
+    #[serde(default)]
+    pub cors_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,8 +61,16 @@ fn default_admin_username() -> String {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct JwtConfig {
+    /// Access token lifetime (short). Default 2 hours.
+    #[serde(default = "default_access_expiry")]
     pub expiry_hours: i64,
+    /// Refresh token lifetime (long). Default 7 days (168 hours).
+    #[serde(default = "default_refresh_expiry")]
+    pub refresh_expiry_hours: i64,
 }
+
+fn default_access_expiry() -> i64 { 2 }
+fn default_refresh_expiry() -> i64 { 168 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CryptoConfig {
@@ -90,8 +102,12 @@ pub struct SmtpConfig {
     pub starttls: bool,
 }
 
-fn default_smtp_port() -> u16 { 587 }
-fn default_true() -> bool { true }
+fn default_smtp_port() -> u16 {
+    587
+}
+fn default_true() -> bool {
+    true
+}
 
 /// Stripe payment gateway configuration.
 /// Leave `secret_key` empty to disable Stripe integration entirely.
@@ -103,7 +119,7 @@ pub struct StripeConfig {
     /// Stripe webhook signing secret (whsec_...)
     #[serde(default)]
     pub webhook_secret: String,
-    /// Currency code for Checkout sessions (lowercase ISO 4217, e.g. "cny", "usd")
+    /// Currency code for Checkout sessions. Only "cny" and "usd" are accepted.
     #[serde(default = "default_currency")]
     pub currency: String,
     /// Predefined top-up amounts (in the currency's smallest unit, e.g. cents/分).
@@ -119,10 +135,18 @@ pub struct StripeConfig {
     pub cancel_url: String,
 }
 
-fn default_currency() -> String { "cny".to_string() }
-fn default_topup_amounts() -> Vec<i64> { vec![1000, 5000, 10000, 50000] }
-fn default_success_url() -> String { "http://localhost:3000/billing?payment=success&session_id={session_id}".to_string() }
-fn default_cancel_url() -> String { "http://localhost:3000/billing?payment=cancelled".to_string() }
+fn default_currency() -> String {
+    "cny".to_string()
+}
+fn default_topup_amounts() -> Vec<i64> {
+    vec![1000, 5000, 10000, 50000]
+}
+fn default_success_url() -> String {
+    "http://localhost:3000/billing?payment=success&session_id={session_id}".to_string()
+}
+fn default_cancel_url() -> String {
+    "http://localhost:3000/billing?payment=cancelled".to_string()
+}
 
 impl StripeConfig {
     pub fn is_enabled(&self) -> bool {

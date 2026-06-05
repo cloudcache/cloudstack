@@ -1,19 +1,19 @@
 //! User-facing network / IP-allocation APIs.
 //!
 //! Admin owns ip_pools and ip_allocations (raw IPAM).
-//! Users own the view layer: which pools are wired to their project's cluster,
+//! Users own the view layer: which pool is wired to their project's cluster,
 //! and which fixed IPs their apps hold.
 //!
-//! Allocation lifecycle (automatic):
-//!   deploy → get_or_allocate_app_ips() assigns VPC + pub IPs
+//! Allocation lifecycle:
+//!   K8s: host-local IPAM assigns IP → status_sync records it via record_pod_ip()
+//!   Docker: allocate_ip_for_docker() pre-assigns → agent uses it
 //!   delete → release_app_ips() frees them
 //!
 //! This module adds the visibility + manual-release surface:
-//!   GET  /projects/:pid/network/pools          — pools available to this project
+//!   GET  /projects/:pid/network/pools          — pool available to this project
 //!   GET  /projects/:pid/network/allocations    — all apps' IPs in this project
 //!   GET  /projects/:pid/apps/:aid/network      — IPs for one app
 //!   DELETE /projects/:pid/apps/:aid/network    — release IPs (freed on next deploy)
-//!   POST /projects/:pid/apps/:aid/network/reassign — release + immediately reallocate
 
 use axum::{
     extract::{Path, State},
@@ -29,8 +29,7 @@ use crate::{
 
 // ── GET /projects/:pid/network/pools ─────────────────────────────────────────
 //
-// Returns the VPC pool and pub pool wired to the cluster(s) serving this
-// project.  Read-only; pool provisioning is admin-only.
+// Returns the IP pool wired to the cluster(s) serving this project.
 
 pub async fn list_project_pools(
     State(state): State<AppState>,
@@ -49,53 +48,47 @@ pub async fn list_project_pools(
     .flatten();
 
     if pool_id.is_none() {
-        return Ok(Json(serde_json::json!({ "vpc_pool": null, "pub_pool": null })));
+        return Ok(Json(serde_json::json!({ "pool": null })));
     }
     let pool_id = pool_id.unwrap();
 
-    // Find the active cluster for that resource pool
-    let cluster = sqlx::query!(
-        r#"SELECT vpc_pool_id, pub_pool_id FROM clusters
-           WHERE pool_id = ? AND is_active = 1
-           ORDER BY created_at LIMIT 1"#,
-        pool_id
+    // Find the active cluster's IP pool
+    let ip_pool_id: Option<String> = sqlx::query_scalar(
+        "SELECT ip_pool_id FROM clusters WHERE pool_id = ? AND is_active = 1 ORDER BY created_at LIMIT 1",
     )
+    .bind(&pool_id)
     .fetch_optional(&state.db)
-    .await?;
+    .await?
+    .flatten();
 
-    let Some(cluster) = cluster else {
-        return Ok(Json(serde_json::json!({ "vpc_pool": null, "pub_pool": null })));
-    };
-
-    let fetch_pool = |id: Option<String>| {
-        let db = state.db.clone();
-        async move {
-            let Some(id) = id else { return Ok::<_, AppError>(None) };
-            let row = sqlx::query!(
-                r#"SELECT id, name, cidr, gateway, pool_type, description
-                   FROM ip_pools WHERE id = ? AND is_active = 1"#,
-                id
-            )
-            .fetch_optional(&db)
-            .await?;
-            Ok(row.map(|r| serde_json::json!({
+    #[derive(sqlx::FromRow)]
+    struct PoolRow {
+        id: String, name: String, cidr: String,
+        gateway: Option<String>, pool_type: String, description: Option<String>,
+    }
+    let pool = if let Some(ref ip_pool_id) = ip_pool_id {
+        let row: Option<PoolRow> = sqlx::query_as(
+            "SELECT id, name, cidr, gateway, pool_type, description \
+             FROM ip_pools WHERE id = ? AND is_active = 1",
+        )
+        .bind(ip_pool_id)
+        .fetch_optional(&state.db)
+        .await?;
+        row.map(|r| {
+            serde_json::json!({
                 "id":          r.id,
                 "name":        r.name,
                 "cidr":        r.cidr,
                 "gateway":     r.gateway,
                 "pool_type":   r.pool_type,
                 "description": r.description,
-            })))
-        }
+            })
+        })
+    } else {
+        None
     };
 
-    let vpc_pool = fetch_pool(cluster.vpc_pool_id).await?;
-    let pub_pool = fetch_pool(cluster.pub_pool_id).await?;
-
-    Ok(Json(serde_json::json!({
-        "vpc_pool": vpc_pool,
-        "pub_pool": pub_pool,
-    })))
+    Ok(Json(serde_json::json!({ "pool": pool })))
 }
 
 // ── GET /projects/:pid/network/allocations ───────────────────────────────────
@@ -109,24 +102,25 @@ pub async fn list_project_allocations(
 ) -> AppResult<impl IntoResponse> {
     super::projects::check_project_access(&state, &auth, &project_id, "OBSERVER").await?;
 
-    let rows = sqlx::query!(
-        r#"SELECT
-             a.id AS app_id,
-             a.name AS app_name,
-             a.status AS app_status,
-             aia.ip_address,
-             aia.pool_id,
-             p.name AS pool_name,
-             p.pool_type,
-             p.gateway,
-             aia.created_at
-           FROM app_ip_allocations aia
-           JOIN apps    a ON a.id    = aia.app_id
-           JOIN ip_pools p ON p.id   = aia.pool_id
-           WHERE a.project_id = ?
-           ORDER BY a.name, p.pool_type"#,
-        project_id
+    #[derive(sqlx::FromRow)]
+    struct AllocRow {
+        app_id: String, app_name: String, app_status: String,
+        ip_address: String, pool_id: String, pool_name: String,
+        pool_type: String, gateway: Option<String>,
+        created_at: chrono::NaiveDateTime,
+    }
+    let rows: Vec<AllocRow> = sqlx::query_as(
+        "SELECT \
+             a.id AS app_id, a.name AS app_name, a.status AS app_status, \
+             aia.ip_address, aia.pool_id, p.name AS pool_name, \
+             p.pool_type, p.gateway, aia.created_at \
+         FROM app_ip_allocations aia \
+         JOIN apps a ON a.id = aia.app_id \
+         JOIN ip_pools p ON p.id = aia.pool_id \
+         WHERE a.project_id = ? \
+         ORDER BY a.name",
     )
+    .bind(&project_id)
     .fetch_all(&state.db)
     .await?;
 
@@ -134,7 +128,7 @@ pub async fn list_project_allocations(
     let mut by_app: std::collections::BTreeMap<String, serde_json::Value> =
         std::collections::BTreeMap::new();
 
-    for r in rows {
+    for r in &rows {
         let entry = by_app.entry(r.app_id.clone()).or_insert_with(|| serde_json::json!({
             "app_id":     r.app_id,
             "app_name":   r.app_name,
@@ -148,7 +142,7 @@ pub async fn list_project_allocations(
             "pool_name":  r.pool_name,
             "pool_type":  r.pool_type,
             "gateway":    r.gateway,
-            "allocated_at": r.created_at,
+            "allocated_at": r.created_at.to_string(),
         }));
     }
 
@@ -213,9 +207,7 @@ pub async fn get_app_network(
 
 // ── DELETE /projects/:pid/apps/:aid/network ───────────────────────────────────
 //
-// Release the fixed IPs for an app.  The app must be STOPPED or SUSPENDED
-// (can't yank IPs from a live deployment).  On next deploy, new IPs are
-// auto-allocated from the same pools.
+// Release the fixed IPs for an app.  The app must be STOPPED or FAILED.
 
 pub async fn release_app_network(
     State(state): State<AppState>,
@@ -241,71 +233,4 @@ pub async fn release_app_network(
     crate::k8s::network::release_app_ips(&state, &app_id).await?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
-}
-
-// ── POST /projects/:pid/apps/:aid/network/reassign ────────────────────────────
-//
-// Release current IPs and immediately allocate new ones from the same pools.
-// Requires the app to be STOPPED — can't hot-swap IPs on a live pod.
-
-pub async fn reassign_app_network(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
-    Path((project_id, app_id)): Path<(String, String)>,
-) -> AppResult<impl IntoResponse> {
-    super::projects::check_project_access(&state, &auth, &project_id, "OPERATOR").await?;
-
-    let app = sqlx::query!(
-        r#"SELECT status FROM apps WHERE id = ? AND project_id = ?"#,
-        app_id, project_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("app {app_id}")))?;
-
-    if !matches!(app.status.as_str(), "STOPPED" | "FAILED") {
-        return Err(AppError::BadRequest(
-            "app must be STOPPED or FAILED to reassign IPs".into()
-        ));
-    }
-
-    // Release existing
-    crate::k8s::network::release_app_ips(&state, &app_id).await?;
-
-    // Find the cluster for this app's pool
-    let cluster_id = sqlx::query_scalar!(
-        r#"SELECT c.id
-           FROM clusters c
-           JOIN apps a ON a.pool_id = c.pool_id
-           WHERE a.id = ? AND c.is_active = 1
-           ORDER BY c.created_at LIMIT 1"#,
-        app_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::Internal("no active cluster for app".into()))?;
-
-    // Allocate new IPs
-    let ips = crate::k8s::network::get_or_allocate_app_ips(&state, &app_id, &cluster_id).await?;
-
-    let result: Vec<serde_json::Value> = [
-        ips.vpc.map(|a| serde_json::json!({
-            "pool_type": "vpc",
-            "ip_address": a.ip_with_prefix,
-            "gateway": a.gateway,
-        })),
-        ips.pub_zone.map(|a| serde_json::json!({
-            "pool_type": "pub",
-            "ip_address": a.ip_with_prefix,
-            "gateway": a.gateway,
-        })),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-
-    Ok(Json(serde_json::json!({
-        "app_id": app_id,
-        "ips":    result,
-    })))
 }

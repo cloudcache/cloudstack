@@ -44,6 +44,9 @@ pub enum AppError {
     #[error("proxy error: {0}")]
     Proxy(String),
 
+    #[error("docker error: {0}")]
+    Docker(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -75,6 +78,7 @@ impl AppError {
             AppError::Crypto(_) => "CRYPTO_ERROR",
             AppError::Ssh(_) => "SSH_ERROR",
             AppError::Proxy(_) => "PROXY_ERROR",
+            AppError::Docker(_) => "DOCKER_ERROR",
             AppError::Internal(_) => "INTERNAL_ERROR",
         }
     }

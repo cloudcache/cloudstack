@@ -90,10 +90,20 @@ pub async fn create(
     .await?
     .ok_or_else(|| AppError::NotFound("cluster not found or inactive".into()))?;
 
+    // Validate user-supplied name: only allow safe characters for MySQL identifiers
+    if body.name.is_empty() || body.name.len() > 32 {
+        return Err(AppError::BadRequest("database name must be 1-32 characters".into()));
+    }
+    if !body.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(AppError::BadRequest(
+            "database name may only contain alphanumeric characters and underscores".into(),
+        ));
+    }
+
     let db_name = format!("p_{}_{}", project_name, body.name);
     let db_user = format!(
         "u_{}_{}",
-        auth.username,
+        auth.username.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_"),
         &Uuid::new_v4().to_string()[..6]
     );
     let db_password = generate_password();
@@ -126,9 +136,19 @@ pub async fn create(
     .execute(&state.db)
     .await?;
 
-    // Create K8s Secret in project namespace
+    // Create K8s Secret in project namespace (on the correct K8s cluster)
+    // Look up which K8s cluster this project deploys to
+    let k8s_cluster_id: String = sqlx::query_scalar(
+        "SELECT cluster_id FROM projects WHERE id = ? AND cluster_id IS NOT NULL"
+    )
+    .bind(&project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::Internal("project has no assigned K8s cluster".into()))?;
+
     crate::k8s::database::create_db_secret(
         &state,
+        &k8s_cluster_id,
         &project_name,
         &secret_name,
         &cluster.host,
@@ -175,16 +195,22 @@ pub async fn delete_db(
     )
     .await?;
 
-    // Delete K8s secret
-    let ns: String = sqlx::query_scalar!(r#"SELECT name FROM projects WHERE id = ?"#, project_id)
-        .fetch_optional(&state.db)
-        .await?
-        .unwrap_or_default();
+    // Delete K8s secret (on the correct K8s cluster)
+    #[derive(sqlx::FromRow)]
+    struct ProjInfo { name: String, cluster_id: Option<String> }
+    let proj_info: Option<ProjInfo> = sqlx::query_as(
+        "SELECT name, cluster_id FROM projects WHERE id = ?"
+    )
+    .bind(&project_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let ns = proj_info.as_ref().map(|r| r.name.clone()).unwrap_or_default();
+    let k8s_cluster_id = proj_info.and_then(|r| r.cluster_id);
     // row.k8s_secret_name is Option<String> at runtime (sqlx MySQL)
     let secret_name_opt: Option<String> = row.k8s_secret_name
         .map(|v| format!("{v}"));
-    if let Some(secret_name) = secret_name_opt {
-        crate::k8s::database::delete_db_secret(&state, &ns, &secret_name).await?;
+    if let (Some(secret_name), Some(cid)) = (secret_name_opt, k8s_cluster_id) {
+        crate::k8s::database::delete_db_secret(&state, &cid, &ns, &secret_name).await?;
     }
 
     sqlx::query!(r#"DELETE FROM database_instances WHERE id = ?"#, db_id)
@@ -234,6 +260,26 @@ pub async fn credentials(
 }
 
 // ─── Admin: DB Clusters ───────────────────────────────────────────────────────
+
+/// Tenant-facing: list active DB clusters available for provisioning.
+/// Returns only the safe fields (no admin creds / host).
+pub async fn list_clusters_user(
+    State(state): State<AppState>,
+    Extension(_auth): Extension<AuthUser>,
+) -> AppResult<impl IntoResponse> {
+    #[derive(sqlx::FromRow)]
+    struct Row { id: String, name: String, cluster_type: String, description: Option<String> }
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, name, cluster_type, description \
+         FROM database_clusters WHERE is_active = 1 ORDER BY name",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(serde_json::json!(rows.iter().map(|r| serde_json::json!({
+        "id": r.id, "name": r.name, "cluster_type": r.cluster_type,
+        "description": r.description,
+    })).collect::<Vec<_>>())))
+}
 
 pub async fn list_clusters(
     State(state): State<AppState>,
@@ -380,7 +426,7 @@ pub async fn delete_cluster(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-fn generate_password() -> String {
+pub(crate) fn generate_password() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     (0..24)

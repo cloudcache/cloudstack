@@ -27,14 +27,18 @@ use crate::{
 fn slug_valid(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && name.starts_with(|c: char| c.is_ascii_lowercase())
 }
 
 fn validate_role(role: &str) -> AppResult<()> {
     match role {
         "ADMIN" | "OPERATOR" | "OBSERVER" => Ok(()),
-        _ => Err(AppError::BadRequest(format!("invalid role '{role}'; valid: ADMIN OPERATOR OBSERVER"))),
+        _ => Err(AppError::BadRequest(format!(
+            "invalid role '{role}'; valid: ADMIN OPERATOR OBSERVER"
+        ))),
     }
 }
 
@@ -64,6 +68,21 @@ pub async fn check_project_access(
     if auth.is_global_admin {
         return Ok(());
     }
+
+    // Project owner always has implicit ADMIN access, even if not in project_members
+    let is_owner = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) FROM projects WHERE id = ? AND owner_id = ?"#,
+        project_id,
+        auth.user_id,
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    if is_owner > 0 {
+        return Ok(()); // owner ≥ ADMIN, satisfies any min_role
+    }
+
     let role = project_role(state, &auth.user_id, project_id).await?;
     let Some(role) = role else {
         return Err(AppError::Forbidden("not a member of this project".into()));
@@ -79,8 +98,8 @@ fn role_level(role: &str) -> u8 {
     match role {
         "OBSERVER" => 1,
         "OPERATOR" => 2,
-        "ADMIN"    => 3,
-        _          => 0,
+        "ADMIN" => 3,
+        _ => 0,
     }
 }
 
@@ -99,6 +118,7 @@ pub async fn list(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
 ) -> AppResult<impl IntoResponse> {
+    // Global admin sees all projects; regular users see only their memberships
     let rows = sqlx::query!(
         r#"SELECT p.id, p.name, p.display_name, p.owner_id,
                   u.username AS owner_username,
@@ -110,15 +130,18 @@ pub async fn list(
                   (SELECT COUNT(*) FROM project_members WHERE project_id = p.id) AS member_count,
                   p.created_at
            FROM projects p
-           JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+           LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
            JOIN users u ON u.id = p.owner_id
+           WHERE pm.user_id IS NOT NULL OR ? = 1
            ORDER BY p.display_name"#,
-        auth.user_id
+        auth.user_id,
+        auth.is_global_admin
     )
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(serde_json::json!(rows.iter().map(|r| serde_json::json!({
+    Ok(Json(
+        serde_json::json!(rows.iter().map(|r| serde_json::json!({
         "id": r.id,
         "name": r.name,
         "display_name": r.display_name,
@@ -126,7 +149,7 @@ pub async fn list(
         "owner_username": r.owner_username,
         "is_active": r.is_active.unwrap_or(0) != 0,
         "is_default": r.is_default.unwrap_or(0) != 0,
-        "my_role": r.my_role,
+        "my_role": r.my_role.as_deref().unwrap_or(if auth.is_global_admin { "ADMIN" } else { "" }),
         "member_count": r.member_count,
         "quota": {
             "cpu_mcores":     r.quota_cpu_mcores,
@@ -139,7 +162,8 @@ pub async fn list(
             "request_million": r.quota_request_million,
         },
         "created_at": r.created_at,
-    })).collect::<Vec<_>>())))
+    })).collect::<Vec<_>>()),
+    ))
 }
 
 // ─── User: get project ────────────────────────────────────────────────────────
@@ -378,24 +402,24 @@ pub async fn leave_project(
 ) -> AppResult<impl IntoResponse> {
     let role = project_role(&state, &auth.user_id, &id).await?;
     if role.is_none() {
-        return Err(AppError::BadRequest("you are not a member of this project".into()));
+        return Err(AppError::BadRequest(
+            "you are not a member of this project".into(),
+        ));
     }
 
     // Cannot leave if you're the last ADMIN
     if role.as_deref() == Some("ADMIN") && admin_count(&state, &id).await? <= 1 {
         return Err(AppError::BadRequest(
-            "cannot leave: you are the last ADMIN — transfer ownership or delete the project first".into(),
+            "cannot leave: you are the last ADMIN — transfer ownership or delete the project first"
+                .into(),
         ));
     }
 
     // Cannot leave if you're the project owner
-    let owner_id: String = sqlx::query_scalar!(
-        r#"SELECT owner_id FROM projects WHERE id = ?"#,
-        id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("project {id}")))?;
+    let owner_id: String = sqlx::query_scalar!(r#"SELECT owner_id FROM projects WHERE id = ?"#, id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {id}")))?;
 
     if owner_id == auth.user_id {
         return Err(AppError::BadRequest(
@@ -431,13 +455,11 @@ pub async fn transfer_owner(
 
     // Only the current owner or global admin can transfer
     if !auth.is_global_admin {
-        let owner_id: String = sqlx::query_scalar!(
-            r#"SELECT owner_id FROM projects WHERE id = ?"#,
-            id
-        )
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("project {id}")))?;
+        let owner_id: String =
+            sqlx::query_scalar!(r#"SELECT owner_id FROM projects WHERE id = ?"#, id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("project {id}")))?;
         if owner_id != auth.user_id {
             return Err(AppError::Forbidden(
                 "only the project owner can transfer ownership".into(),
@@ -499,16 +521,19 @@ pub async fn list_members(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(serde_json::json!(rows.iter().map(|r| serde_json::json!({
-        "user_id": r.user_id,
-        "username": r.username,
-        "display_name": r.display_name,
-        "email": r.email,
-        "is_active": r.is_active != 0,
-        "role": r.role,
-        "added_at": r.added_at,
-        "added_by": r.added_by_username,
-    })).collect::<Vec<_>>())))
+    Ok(Json(serde_json::json!(rows
+        .iter()
+        .map(|r| serde_json::json!({
+            "user_id": r.user_id,
+            "username": r.username,
+            "display_name": r.display_name,
+            "email": r.email,
+            "is_active": r.is_active != 0,
+            "role": r.role,
+            "added_at": r.added_at,
+            "added_by": r.added_by_username,
+        }))
+        .collect::<Vec<_>>())))
 }
 
 // ─── Members: invite / add ────────────────────────────────────────────────────
@@ -551,7 +576,9 @@ pub async fn add_member(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("user '{uname}'")))?
     } else {
-        return Err(AppError::BadRequest("provide either user_id or username".into()));
+        return Err(AppError::BadRequest(
+            "provide either user_id or username".into(),
+        ));
     };
 
     sqlx::query!(
@@ -588,7 +615,8 @@ pub async fn update_member(
     // Prevent demoting the last ADMIN
     if body.role != "ADMIN" {
         let current_role = project_role(&state, &user_id, &project_id).await?;
-        if current_role.as_deref() == Some("ADMIN") && admin_count(&state, &project_id).await? <= 1 {
+        if current_role.as_deref() == Some("ADMIN") && admin_count(&state, &project_id).await? <= 1
+        {
             return Err(AppError::BadRequest(
                 "cannot demote: this user is the last ADMIN of the project".into(),
             ));
@@ -596,13 +624,11 @@ pub async fn update_member(
     }
 
     // Prevent demoting project owner
-    let owner_id: String = sqlx::query_scalar!(
-        r#"SELECT owner_id FROM projects WHERE id = ?"#,
-        project_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("project {project_id}")))?;
+    let owner_id: String =
+        sqlx::query_scalar!(r#"SELECT owner_id FROM projects WHERE id = ?"#, project_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("project {project_id}")))?;
 
     if user_id == owner_id && body.role != "ADMIN" {
         return Err(AppError::BadRequest(
@@ -620,7 +646,9 @@ pub async fn update_member(
     .await?;
 
     if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("member {user_id} in project {project_id}")));
+        return Err(AppError::NotFound(format!(
+            "member {user_id} in project {project_id}"
+        )));
     }
 
     Ok(axum::http::StatusCode::NO_CONTENT)
@@ -636,13 +664,11 @@ pub async fn remove_member(
     check_project_access(&state, &auth, &project_id, "ADMIN").await?;
 
     // Cannot remove project owner
-    let owner_id: String = sqlx::query_scalar!(
-        r#"SELECT owner_id FROM projects WHERE id = ?"#,
-        project_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("project {project_id}")))?;
+    let owner_id: String =
+        sqlx::query_scalar!(r#"SELECT owner_id FROM projects WHERE id = ?"#, project_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("project {project_id}")))?;
 
     if user_id == owner_id {
         return Err(AppError::BadRequest(
@@ -667,7 +693,9 @@ pub async fn remove_member(
     .await?;
 
     if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("member {user_id} in project {project_id}")));
+        return Err(AppError::NotFound(format!(
+            "member {user_id} in project {project_id}"
+        )));
     }
 
     Ok(axum::http::StatusCode::NO_CONTENT)
@@ -822,12 +850,10 @@ pub async fn admin_get(
     .fetch_all(&state.db)
     .await?;
 
-    let app_count: i64 = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) FROM apps WHERE project_id = ?"#,
-        id
-    )
-    .fetch_one(&state.db)
-    .await?;
+    let app_count: i64 =
+        sqlx::query_scalar!(r#"SELECT COUNT(*) FROM apps WHERE project_id = ?"#, id)
+            .fetch_one(&state.db)
+            .await?;
 
     let db_count: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) FROM database_instances WHERE project_id = ?"#,
@@ -881,7 +907,8 @@ pub async fn admin_get(
 pub struct AdminCreateProjectRequest {
     pub name: String,
     pub display_name: String,
-    pub owner_id: String,
+    /// Defaults to the requesting admin when omitted.
+    pub owner_id: Option<String>,
     pub quota_cpu_mcores: Option<u32>,
     pub quota_mem_mb: Option<u32>,
     pub quota_storage_gb: Option<u32>,
@@ -905,15 +932,14 @@ pub async fn admin_create(
         ));
     }
 
+    let owner_id = body.owner_id.as_deref().unwrap_or(&auth.user_id);
+
     // Validate owner exists
-    let owner_exists = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) FROM users WHERE id = ?"#,
-        body.owner_id
-    )
-    .fetch_one(&state.db)
-    .await?;
+    let owner_exists = sqlx::query_scalar!(r#"SELECT COUNT(*) FROM users WHERE id = ?"#, owner_id)
+        .fetch_one(&state.db)
+        .await?;
     if owner_exists == 0 {
-        return Err(AppError::NotFound(format!("owner user {}", body.owner_id)));
+        return Err(AppError::NotFound(format!("owner user {owner_id}")));
     }
 
     let id = Uuid::new_v4().to_string();
@@ -927,7 +953,7 @@ pub async fn admin_create(
         id,
         body.name,
         body.display_name.trim(),
-        body.owner_id,
+        owner_id,
         body.quota_cpu_mcores.unwrap_or(0),
         body.quota_mem_mb.unwrap_or(0),
         body.quota_storage_gb.unwrap_or(0),
@@ -950,7 +976,7 @@ pub async fn admin_create(
         r#"INSERT INTO project_members (project_id, user_id, role, added_by)
            VALUES (?, ?, 'ADMIN', ?)"#,
         id,
-        body.owner_id,
+        owner_id,
         auth.user_id,
     )
     .execute(&state.db)
@@ -991,12 +1017,9 @@ pub async fn admin_update(
 
     // Validate new owner if provided
     if let Some(ref new_owner) = body.owner_id {
-        let exists = sqlx::query_scalar!(
-            r#"SELECT COUNT(*) FROM users WHERE id = ?"#,
-            new_owner
-        )
-        .fetch_one(&state.db)
-        .await?;
+        let exists = sqlx::query_scalar!(r#"SELECT COUNT(*) FROM users WHERE id = ?"#, new_owner)
+            .fetch_one(&state.db)
+            .await?;
         if exists == 0 {
             return Err(AppError::NotFound(format!("owner user {new_owner}")));
         }
@@ -1095,15 +1118,14 @@ pub async fn admin_add_member(
     let target_id = if let Some(ref uid) = body.user_id {
         uid.clone()
     } else if let Some(ref uname) = body.username {
-        sqlx::query_scalar!(
-            r#"SELECT id FROM users WHERE username = ?"#,
-            uname
-        )
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("user '{uname}'")))?
+        sqlx::query_scalar!(r#"SELECT id FROM users WHERE username = ?"#, uname)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user '{uname}'")))?
     } else {
-        return Err(AppError::BadRequest("provide either user_id or username".into()));
+        return Err(AppError::BadRequest(
+            "provide either user_id or username".into(),
+        ));
     };
 
     sqlx::query!(
@@ -1142,7 +1164,9 @@ pub async fn admin_update_member(
     .await?;
 
     if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("member {user_id} in project {project_id}")));
+        return Err(AppError::NotFound(format!(
+            "member {user_id} in project {project_id}"
+        )));
     }
 
     Ok(axum::http::StatusCode::NO_CONTENT)
@@ -1166,7 +1190,9 @@ pub async fn admin_remove_member(
     .await?;
 
     if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("member {user_id} in project {project_id}")));
+        return Err(AppError::NotFound(format!(
+            "member {user_id} in project {project_id}"
+        )));
     }
 
     Ok(axum::http::StatusCode::NO_CONTENT)

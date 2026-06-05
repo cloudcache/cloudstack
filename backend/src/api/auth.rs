@@ -1,5 +1,5 @@
 use axum::{extract::State, response::IntoResponse, Extension, Json};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
@@ -23,6 +23,7 @@ pub struct LoginRequest {
 #[derive(Serialize)]
 pub struct LoginResponse {
     pub token: String,
+    pub refresh_token: String,
     pub user: UserInfo,
 }
 
@@ -41,56 +42,35 @@ pub async fn login(
     headers: axum::http::HeaderMap,
     Json(body): Json<LoginRequest>,
 ) -> AppResult<impl IntoResponse> {
-    use crate::auth::ldap::LdapService;
-
-    let ldap = LdapService::new(state.config.ldap.clone());
-    let ldap_user = ldap.authenticate(&body.username, &body.password).await?;
-
-    // Upsert user record
-    let user_id = sqlx::query_scalar!(
-        r#"SELECT id FROM users WHERE username = ?"#,
-        ldap_user.uid
+    // ── 1. Try local password auth first ─────────────────────────────────────
+    // Accept username OR email in the login field
+    let local_user = sqlx::query!(
+        r#"SELECT id, username, email, display_name, is_global_admin, is_active, password_hash
+           FROM users WHERE username = ? OR email = ?"#,
+        body.username,
+        body.username
     )
     .fetch_optional(&state.db)
     .await?;
 
-    let user_id = if let Some(id) = user_id {
-        sqlx::query!(
-            r#"UPDATE users
-               SET email = ?, display_name = ?, ldap_dn = ?,
-                   ldap_uid = ?, ldap_gid = ?, is_global_admin = ?,
-                   updated_at = NOW()
-               WHERE id = ?"#,
-            ldap_user.email,
-            ldap_user.display_name,
-            ldap_user.dn,
-            ldap_user.posix_uid,
-            ldap_user.posix_gid,
-            ldap_user.is_admin as i8,
-            id,
-        )
-        .execute(&state.db)
-        .await?;
-        id
+    let user_id: String;
+
+    if let Some(ref row) = local_user {
+        if let Some(ref hash) = row.password_hash {
+            // User has a local password — verify with argon2
+            if verify_password(&body.password, hash) {
+                user_id = row.id.clone();
+            } else {
+                return Err(AppError::Unauthorized("invalid credentials".into()));
+            }
+        } else {
+            // User exists but has no local password — try LDAP
+            user_id = try_ldap_login(&state, &body).await?;
+        }
     } else {
-        let new_id = Uuid::new_v4().to_string();
-        sqlx::query!(
-            r#"INSERT INTO users
-               (id, username, email, display_name, ldap_dn, ldap_uid, ldap_gid, is_global_admin)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
-            new_id,
-            ldap_user.uid,
-            ldap_user.email,
-            ldap_user.display_name,
-            ldap_user.dn,
-            ldap_user.posix_uid,
-            ldap_user.posix_gid,
-            ldap_user.is_admin as i8,
-        )
-        .execute(&state.db)
-        .await?;
-        new_id
-    };
+        // User not in DB — try LDAP (will create the user row)
+        user_id = try_ldap_login(&state, &body).await?;
+    }
 
     // Ensure wallet exists
     sqlx::query!(
@@ -144,10 +124,11 @@ pub async fn login(
         }
     }
 
-    let token = issue_session(&state, &user_id, &addr, &headers).await?;
+    let tokens = issue_session(&state, &user_id, &addr, &headers).await?;
 
     Ok(Json(LoginResponse {
-        token,
+        token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
         user: UserInfo {
             id: user.id,
             username: user.username,
@@ -156,6 +137,102 @@ pub async fn login(
             is_global_admin: user.is_global_admin != 0,
         },
     }))
+}
+
+/// Authenticate via LDAP and upsert the user row. Returns the user ID.
+async fn try_ldap_login(state: &AppState, body: &LoginRequest) -> AppResult<String> {
+    use crate::auth::ldap::LdapService;
+
+    let ldap = LdapService::new(state.config.ldap.clone());
+    let ldap_user = ldap.authenticate(&body.username, &body.password).await?;
+
+    // Match by DN/uid/email. A partial or multi-row match is unsafe because it
+    // would bind one LDAP identity to the wrong local account.
+    let matches = sqlx::query(
+        r#"SELECT id, username, email, ldap_dn
+           FROM users
+           WHERE ldap_dn = ? OR username = ? OR email = ?"#,
+    )
+    .bind(&ldap_user.dn)
+    .bind(&ldap_user.uid)
+    .bind(&ldap_user.email)
+    .fetch_all(&state.db)
+    .await?;
+
+    if matches.len() > 1 {
+        return Err(AppError::Conflict(
+            "LDAP identity matches multiple local users; run LDAP sync and resolve conflicts".into(),
+        ));
+    }
+
+    if let Some(row) = matches.first() {
+        let id: String = sqlx::Row::get(row, "id");
+        let username: String = sqlx::Row::get(row, "username");
+        let email: String = sqlx::Row::get(row, "email");
+        let ldap_dn: Option<String> = sqlx::Row::get(row, "ldap_dn");
+
+        if ldap_dn.is_none()
+            && (username != ldap_user.uid || !email.eq_ignore_ascii_case(&ldap_user.email))
+        {
+            return Err(AppError::Conflict(
+                "LDAP uid/mail must match the same local user before binding".into(),
+            ));
+        }
+
+        // LDAP can promote to admin but never demote — preserve DB-level grants.
+        if ldap_user.is_admin {
+            sqlx::query!(
+                r#"UPDATE users
+                   SET email = ?, display_name = ?, ldap_dn = ?,
+                       ldap_uid = ?, ldap_gid = ?, is_global_admin = 1,
+                       updated_at = NOW()
+                   WHERE id = ?"#,
+                ldap_user.email,
+                ldap_user.display_name,
+                ldap_user.dn,
+                ldap_user.posix_uid,
+                ldap_user.posix_gid,
+                id,
+            )
+            .execute(&state.db)
+            .await?;
+        } else {
+            sqlx::query!(
+                r#"UPDATE users
+                   SET email = ?, display_name = ?, ldap_dn = ?,
+                       ldap_uid = ?, ldap_gid = ?,
+                       updated_at = NOW()
+                   WHERE id = ?"#,
+                ldap_user.email,
+                ldap_user.display_name,
+                ldap_user.dn,
+                ldap_user.posix_uid,
+                ldap_user.posix_gid,
+                id,
+            )
+            .execute(&state.db)
+            .await?;
+        }
+        Ok(id)
+    } else {
+        let new_id = Uuid::new_v4().to_string();
+        sqlx::query!(
+            r#"INSERT INTO users
+               (id, username, email, display_name, ldap_dn, ldap_uid, ldap_gid, is_global_admin)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+            new_id,
+            ldap_user.uid,
+            ldap_user.email,
+            ldap_user.display_name,
+            ldap_user.dn,
+            ldap_user.posix_uid,
+            ldap_user.posix_gid,
+            ldap_user.is_admin as i8,
+        )
+        .execute(&state.db)
+        .await?;
+        Ok(new_id)
+    }
 }
 
 // ─── Register ─────────────────────────────────────────────────────────────────
@@ -186,10 +263,14 @@ pub async fn register(
 
     // Basic validation
     if body.username.len() < 3 || body.username.len() > 64 {
-        return Err(AppError::BadRequest("username must be 3–64 characters".into()));
+        return Err(AppError::BadRequest(
+            "username must be 3–64 characters".into(),
+        ));
     }
     if body.password.len() < 8 {
-        return Err(AppError::BadRequest("password must be at least 8 characters".into()));
+        return Err(AppError::BadRequest(
+            "password must be at least 8 characters".into(),
+        ));
     }
     if !body.email.contains('@') {
         return Err(AppError::BadRequest("invalid email".into()));
@@ -205,11 +286,13 @@ pub async fn register(
     .await?;
 
     if exists > 0 {
-        return Err(AppError::Conflict("username or email already registered".into()));
+        return Err(AppError::Conflict(
+            "username or email already registered".into(),
+        ));
     }
 
-    // Create LLDAP user + set password
-    state
+    // Try LLDAP user creation (non-fatal — works without LDAP configured)
+    let _ = state
         .lldap
         .create_user(
             &body.username,
@@ -217,32 +300,51 @@ pub async fn register(
             body.display_name.as_deref(),
             &body.password,
         )
-        .await?;
+        .await;
 
     // If a default group is configured, add user to it
     if let Some(group_id) = state.config.ldap.default_user_group_id {
-        let _ = state.lldap.add_user_to_group(&body.username, group_id).await;
+        let _ = state
+            .lldap
+            .add_user_to_group(&body.username, group_id)
+            .await;
     }
+
+    // First registered user becomes admin automatically
+    let user_count = sqlx::query_scalar!(r#"SELECT COUNT(*) FROM users"#)
+        .fetch_one(&state.db)
+        .await?;
+    let is_first_user = user_count == 0;
 
     // Insert local user row
     let id = Uuid::new_v4().to_string();
-    let require_approval = sqlx::query_scalar!(
-        r#"SELECT `value` FROM platform_config WHERE `key` = 'registration_require_approval'"#
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .unwrap_or_else(|| "0".to_string());
+    let require_approval = if is_first_user {
+        // First user is always active, no approval needed
+        "0".to_string()
+    } else {
+        sqlx::query_scalar!(
+            r#"SELECT `value` FROM platform_config WHERE `key` = 'registration_require_approval'"#
+        )
+        .fetch_optional(&state.db)
+        .await?
+        .unwrap_or_else(|| "0".to_string())
+    };
 
     let is_active: i8 = if require_approval == "1" { 0 } else { 1 };
+    let is_admin: i8 = if is_first_user { 1 } else { 0 };
+
+    let password_hash = hash_password(&body.password)?;
 
     sqlx::query!(
-        r#"INSERT INTO users (id, username, email, display_name, is_active)
-           VALUES (?, ?, ?, ?, ?)"#,
+        r#"INSERT INTO users (id, username, email, display_name, is_active, is_global_admin, password_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?)"#,
         id,
         body.username,
         body.email,
         body.display_name,
         is_active,
+        is_admin,
+        password_hash,
     )
     .execute(&state.db)
     .await
@@ -371,7 +473,9 @@ pub async fn reset_password(
     Json(body): Json<ResetPasswordRequest>,
 ) -> AppResult<impl IntoResponse> {
     if body.new_password.len() < 8 {
-        return Err(AppError::BadRequest("password must be at least 8 characters".into()));
+        return Err(AppError::BadRequest(
+            "password must be at least 8 characters".into(),
+        ));
     }
 
     let token_hash = CryptoService::sha256_hex(&body.token);
@@ -394,11 +498,21 @@ pub async fn reset_password(
         return Err(AppError::BadRequest("reset token expired".into()));
     }
 
-    // Change password in LLDAP
-    state
+    // Update local password hash
+    let new_hash = hash_password(&body.new_password)?;
+    sqlx::query!(
+        r#"UPDATE users SET password_hash = ? WHERE id = ?"#,
+        new_hash,
+        row.user_id
+    )
+    .execute(&state.db)
+    .await?;
+
+    // Try to change password in LLDAP too (non-fatal — user may be local-only)
+    let _ = state
         .lldap
         .change_password(&row.username, &body.new_password)
-        .await?;
+        .await;
 
     // Mark token used
     sqlx::query!(
@@ -416,7 +530,9 @@ pub async fn reset_password(
     .execute(&state.db)
     .await?;
 
-    Ok(Json(serde_json::json!({ "message": "密码重置成功，请重新登录" })))
+    Ok(Json(
+        serde_json::json!({ "message": "密码重置成功，请重新登录" }),
+    ))
 }
 
 // ─── Me ───────────────────────────────────────────────────────────────────────
@@ -462,6 +578,70 @@ pub async fn me(
     })))
 }
 
+// ─── Token refresh ───────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RefreshRequest {
+    pub refresh_token: String,
+}
+
+/// POST /auth/refresh  (public — no auth middleware, access token may be expired)
+///
+/// Validates the refresh token against the DB, deletes it (rotation),
+/// and issues a brand-new access token + refresh token pair.
+pub async fn refresh(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<RefreshRequest>,
+) -> AppResult<impl IntoResponse> {
+    let rt_hash = CryptoService::sha256_hex(&body.refresh_token);
+
+    // Validate refresh token: must exist and not be expired.
+    // refresh_tokens.expires_at is TIMESTAMP — decode as DateTime<Utc>, not NaiveDateTime.
+    #[derive(sqlx::FromRow)]
+    struct RtRow { id: String, user_id: String, expires_at: DateTime<Utc> }
+
+    let row: RtRow = sqlx::query_as(
+        "SELECT id, user_id, expires_at FROM refresh_tokens WHERE token_hash = ?",
+    )
+    .bind(&rt_hash)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::Unauthorized("invalid refresh token".into()))?;
+
+    if Utc::now() > row.expires_at {
+        let _ = sqlx::query("DELETE FROM refresh_tokens WHERE id = ?")
+            .bind(&row.id).execute(&state.db).await;
+        return Err(AppError::Unauthorized("refresh token expired".into()));
+    }
+
+    // Rotation: delete the used refresh token
+    let _ = sqlx::query("DELETE FROM refresh_tokens WHERE id = ?")
+        .bind(&row.id).execute(&state.db).await;
+
+    // Check user is still active
+    let user_active: i8 = sqlx::query_scalar(
+        "SELECT is_active FROM users WHERE id = ?",
+    )
+    .bind(&row.user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .unwrap_or(0);
+
+    if user_active == 0 {
+        return Err(AppError::Forbidden("account disabled".into()));
+    }
+
+    // Issue new pair
+    let tokens = issue_session(&state, &row.user_id, &addr, &headers).await?;
+
+    Ok(Json(serde_json::json!({
+        "token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+    })))
+}
+
 // ─── Logout ───────────────────────────────────────────────────────────────────
 
 pub async fn logout(
@@ -471,12 +651,21 @@ pub async fn logout(
     >,
 ) -> AppResult<impl IntoResponse> {
     let token_hash = CryptoService::sha256_hex(bearer.token());
+    // Delete access session
     sqlx::query!(
         r#"DELETE FROM user_sessions WHERE token_hash = ?"#,
         token_hash
     )
     .execute(&state.db)
     .await?;
+    // Also clean up any refresh tokens for this user (full logout)
+    let secret = state.jwt_secret.read().await.clone();
+    if let Ok(claims) = jwt::verify(bearer.token(), &secret) {
+        let _ = sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
+            .bind(&claims.sub)
+            .execute(&state.db)
+            .await;
+    }
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -520,7 +709,10 @@ pub async fn totp_setup(
     .execute(&state.db)
     .await?;
 
-    Ok(Json(TotpSetupResponse { secret: secret_str, qr_url }))
+    Ok(Json(TotpSetupResponse {
+        secret: secret_str,
+        qr_url,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -547,7 +739,9 @@ pub async fn totp_verify(
         6,
         1,
         30,
-        totp_rs::Secret::Raw(secret_plain.into_bytes()).to_bytes().unwrap(),
+        totp_rs::Secret::Raw(secret_plain.into_bytes())
+            .to_bytes()
+            .unwrap(),
         None,
         "".to_string(),
     )
@@ -582,18 +776,25 @@ pub async fn totp_disable(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Issue a JWT and insert a session row. Returns the raw token.
+pub(crate) struct IssuedTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+}
+
+/// Issue an access JWT + refresh token, persist both. Returns the raw tokens.
 pub(crate) async fn issue_session(
     state: &AppState,
     user_id: &str,
     addr: &std::net::SocketAddr,
     headers: &axum::http::HeaderMap,
-) -> AppResult<String> {
+) -> AppResult<IssuedTokens> {
     let secret = state.jwt_secret.read().await.clone();
-    let token = jwt::issue(user_id, &secret, state.config.jwt.expiry_hours)?;
 
-    let token_hash = CryptoService::sha256_hex(&token);
-    let expires_at = Utc::now() + Duration::hours(state.config.jwt.expiry_hours);
+    // ── Access token (short-lived JWT) ──────────────────────────────────────
+    let access_token = jwt::issue(user_id, &secret, state.config.jwt.expiry_hours)?;
+    let access_hash = CryptoService::sha256_hex(&access_token);
+    let access_expires = Utc::now() + Duration::hours(state.config.jwt.expiry_hours);
+
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -604,32 +805,68 @@ pub(crate) async fn issue_session(
            VALUES (?, ?, ?, ?, ?, ?)"#,
         Uuid::new_v4().to_string(),
         user_id,
-        token_hash,
+        access_hash,
         addr.ip().to_string(),
         user_agent,
-        expires_at.naive_utc(),
+        access_expires.naive_utc(),
     )
     .execute(&state.db)
     .await?;
 
-    Ok(token)
+    // ── Refresh token (long-lived opaque token) ─────────────────────────────
+    let refresh_raw = format!("qs_rt_{}", Uuid::new_v4().as_simple());
+    let refresh_hash = CryptoService::sha256_hex(&refresh_raw);
+    let refresh_expires = Utc::now() + Duration::hours(state.config.jwt.refresh_expiry_hours);
+
+    sqlx::query(
+        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(user_id)
+    .bind(&refresh_hash)
+    // refresh_tokens.expires_at is TIMESTAMP — bind DateTime<Utc>, not NaiveDateTime
+    .bind(refresh_expires)
+    .execute(&state.db)
+    .await?;
+
+    Ok(IssuedTokens {
+        access_token,
+        refresh_token: refresh_raw,
+    })
 }
 
 // ─── Registration status (public) ────────────────────────────────────────────
 
 /// GET /auth/registration-status — returns whether self-registration is enabled.
-/// Reads from platform_config key `registration_enabled` (default: true).
-pub async fn registration_status(
-    State(state): State<AppState>,
-) -> AppResult<impl IntoResponse> {
+/// Registration is open when:
+///   1. No users exist yet (first-user bootstrap), OR
+///   2. platform_config `registration_enabled` is explicitly "1" / "true"
+/// Default (key absent, users > 0): registration closed.
+pub async fn registration_status(State(state): State<AppState>) -> AppResult<impl IntoResponse> {
+    let user_count = sqlx::query_scalar!(r#"SELECT COUNT(*) FROM users"#)
+        .fetch_one(&state.db)
+        .await?;
+
+    let first_boot = user_count == 0;
+
+    // No users yet — registration must be open for first admin
+    if first_boot {
+        return Ok(Json(
+            serde_json::json!({ "enabled": true, "first_boot": true }),
+        ));
+    }
+
+    // After first user, respect the platform_config setting (default: closed)
     let val = sqlx::query_scalar!(
         r#"SELECT `value` FROM platform_config WHERE `key` = 'registration_enabled'"#
     )
     .fetch_optional(&state.db)
     .await?;
 
-    let enabled = val.as_deref() != Some("false");
-    Ok(Json(serde_json::json!({ "enabled": enabled })))
+    let enabled = val.as_deref() == Some("1") || val.as_deref() == Some("true");
+    Ok(Json(
+        serde_json::json!({ "enabled": enabled, "first_boot": false }),
+    ))
 }
 
 fn generate_secure_token() -> String {
@@ -639,4 +876,25 @@ fn generate_secure_token() -> String {
         .take(32)
         .collect();
     hex::encode(bytes)
+}
+
+/// Hash a password with argon2id (recommended default).
+pub(crate) fn hash_password(password: &str) -> AppResult<String> {
+    use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+    let salt = SaltString::generate(&mut rand::thread_rng());
+    let hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| AppError::Crypto(format!("argon2 hash: {e}")))?;
+    Ok(hash.to_string())
+}
+
+/// Verify a password against an argon2 PHC string.
+fn verify_password(password: &str, hash: &str) -> bool {
+    use argon2::{password_hash::PasswordHash, Argon2, PasswordVerifier};
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok()
 }

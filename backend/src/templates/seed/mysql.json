@@ -1,0 +1,70 @@
+{
+  "slug": "mysql",
+  "name": "MySQL",
+  "icon_url": "mysql.svg",
+  "category": "database",
+  "image_repository": "mysql",
+  "image_tag": "9",
+  "spec": {
+    "appModel": {
+      "name": "MySQL",
+      "appType": "MYSQL",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "envVars": "",
+      "ingressNetworkPolicy": "NAMESPACE_ONLY",
+      "egressNetworkPolicy": "DENY_ALL",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 5,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [
+      {
+        "size": 500,
+        "containerMountPath": "/var/lib/mysql",
+        "accessMode": "ReadWriteOnce",
+        "storageClassName": "longhorn",
+        "shareWithOtherApps": false
+      }
+    ],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 3306
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "key": "MYSQL_DATABASE",
+      "label": "Database Name",
+      "value": "mysqldb",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": false
+    },
+    {
+      "key": "MYSQL_USER",
+      "label": "Database User",
+      "value": "mysqluser",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": false
+    },
+    {
+      "key": "MYSQL_PASSWORD",
+      "label": "Database Password",
+      "value": "",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": true
+    },
+    {
+      "key": "MYSQL_ROOT_PASSWORD",
+      "label": "Root Password",
+      "value": "",
+      "isEnvVar": true,
+      "randomGeneratedIfEmpty": true
+    }
+  ]
+}

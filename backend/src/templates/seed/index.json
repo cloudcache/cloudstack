@@ -1,0 +1,22 @@
+[
+  "adminer",
+  "apache-tika",
+  "chisel-tunnel",
+  "docmost",
+  "draw-io",
+  "duplicati",
+  "gitea",
+  "libredesk",
+  "mariadb",
+  "minio",
+  "mongodb",
+  "mysql",
+  "n8n",
+  "nextcloud",
+  "nginx",
+  "open-webui",
+  "postgresql",
+  "redis",
+  "uptime-kuma",
+  "wordpress"
+]

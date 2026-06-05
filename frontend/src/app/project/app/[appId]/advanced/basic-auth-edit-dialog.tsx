@@ -1,0 +1,138 @@
+'use client'
+
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
+import { Input } from "@/components/ui/input"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useForm } from "react-hook-form"
+import { useActionState, useTransition } from 'react'
+import { useEffect, useState } from "react";
+import { FormUtils } from "@/frontend/utils/form.utilts";
+import { SubmitButton } from "@/components/custom/submit-button";
+import { AppBasicAuth, AppFileMount } from "@/shared/model/prisma-compat"
+import { ServerActionResult } from "@/shared/model/server-action-error-return.model"
+import { toast } from "sonner"
+import { AppExtendedModel } from "@/shared/model/app-extended.model"
+import { Textarea } from "@/components/ui/textarea"
+import { BasicAuthEditModel, basicAuthEditZodModel } from "@/shared/model/basic-auth-edit.model"
+import { saveBasicAuth } from "./actions"
+import { z } from "zod"
+import { useT } from "@/i18n"
+
+
+const accessModes = [
+  { label: "ReadWriteOnce", value: "ReadWriteOnce" },
+  { label: "ReadWriteMany", value: "ReadWriteMany" },
+] as const
+
+export default function BasicAuthEditDialog({
+  children,
+  basicAuth,
+  app
+}: {
+  children: React.ReactNode;
+  basicAuth?: AppBasicAuth;
+  app: AppExtendedModel;
+}) {
+
+  const t = useT();
+  const [isOpen, setIsOpen] = useState<boolean>(false);
+
+  const form = useForm<BasicAuthEditModel>({
+    resolver: zodResolver(basicAuthEditZodModel.merge(z.object({
+      appId: z.string().nullish()
+    }))) as any,
+    defaultValues: {
+      ...basicAuth,
+    }
+  });
+
+  const [, startTransition] = useTransition();
+  const [state, formAction] = useActionState((state: ServerActionResult<any, any>, payload: BasicAuthEditModel) =>
+    saveBasicAuth(state, {
+      ...payload,
+      appId: app.id,
+      id: basicAuth?.id
+    }), FormUtils.getInitialFormState<typeof basicAuthEditZodModel>());
+
+  useEffect(() => {
+    if (state.status === 'success') {
+      form.reset();
+      toast.success(t('app.basicAuth.saved'), {
+        description: t('app.common.deployToApply'),
+      });
+      setIsOpen(false);
+    }
+    FormUtils.mapValidationErrorsToForm<typeof basicAuthEditZodModel>(state, form as any);
+  }, [state]);
+
+  useEffect(() => {
+    form.reset(basicAuth);
+  }, [basicAuth, app]);
+
+  return (
+    <>
+      <div onClick={() => setIsOpen(true)}>
+        {children}
+      </div>
+      <Dialog open={!!isOpen} onOpenChange={(isOpened) => setIsOpen(false)}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>{t('app.basicAuth.title')}</DialogTitle>
+            <DialogDescription>
+              {t('app.basicAuth.editDescription')}
+            </DialogDescription>
+          </DialogHeader>
+          <Form {...form}>
+            <form action={(e) => form.handleSubmit((data) => {
+              return startTransition(() => formAction(data));
+            }, console.error)()}>
+              <div className="space-y-4">
+                <FormField
+                  control={form.control}
+                  name="username"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('common.username')}</FormLabel>
+                      <FormControl>
+                        <Input {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="password"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('common.password')}</FormLabel>
+                      <FormControl>
+                        <Input type="password" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <p className="text-red-500">{state.message}</p>
+                <SubmitButton>{t('common.save')}</SubmitButton>
+              </div>
+            </form>
+          </Form >
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+
+
+
+}

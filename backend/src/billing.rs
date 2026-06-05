@@ -12,7 +12,8 @@ use crate::{
 
 async fn cfg(state: &AppState, key: &str, default: f64) -> f64 {
     sqlx::query_scalar!(
-        r#"SELECT `value` FROM platform_config WHERE `key` = ?"#, key
+        r#"SELECT `value` FROM platform_config WHERE `key` = ?"#,
+        key
     )
     .fetch_optional(&state.db)
     .await
@@ -22,14 +23,39 @@ async fn cfg(state: &AppState, key: &str, default: f64) -> f64 {
     .unwrap_or(default)
 }
 
+/// Read the configured billing currency.
+///
+/// Precedence: `platform_config.billing_currency` → `config.stripe.currency` → "cny".
+/// This resolves the dual-config issue: platform_config is authoritative,
+/// stripe config is the fallback when platform_config hasn't been set.
+pub async fn billing_currency(state: &AppState) -> String {
+    sqlx::query_scalar!(r#"SELECT `value` FROM platform_config WHERE `key` = 'billing_currency'"#)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| {
+            let sc = &state.config.stripe.currency;
+            if sc.is_empty() {
+                "cny".to_string()
+            } else {
+                sc.clone()
+            }
+        })
+}
+
 // ── P95 calculation ────────────────────────────────────────────────────────────
 
 /// Returns the 95th-percentile value from a sorted slice (ascending).
 /// Uses nearest-rank method: ceil(0.95 * n).
 fn p95(mut samples: Vec<f64>) -> f64 {
-    if samples.is_empty() { return 0.0; }
+    if samples.is_empty() {
+        return 0.0;
+    }
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let idx = ((samples.len() as f64 * 0.95).ceil() as usize).saturating_sub(1).min(samples.len() - 1);
+    let idx = ((samples.len() as f64 * 0.95).ceil() as usize)
+        .saturating_sub(1)
+        .min(samples.len() - 1);
     samples[idx]
 }
 
@@ -49,8 +75,8 @@ pub struct MonthlyNetworkStats {
 pub async fn compute_monthly_network(
     state: &AppState,
     project_id: &str,
-    month_start: NaiveDate,   // first day of month
-    month_end: NaiveDate,     // first day of NEXT month (exclusive)
+    month_start: NaiveDate, // first day of month
+    month_end: NaiveDate,   // first day of NEXT month (exclusive)
 ) -> AppResult<MonthlyNetworkStats> {
     let rows = sqlx::query!(
         r#"SELECT egress_bytes, ingress_bytes, duration_secs,
@@ -78,7 +104,8 @@ pub async fn compute_monthly_network(
     }
 
     // P95 of egress bandwidth in Mbps
-    let egress_mbps_samples: Vec<f64> = rows.iter()
+    let egress_mbps_samples: Vec<f64> = rows
+        .iter()
         .map(|r| {
             let dur = r.duration_secs.max(1) as f64;
             r.egress_bytes as f64 / dur * 8.0 / 1_000_000.0
@@ -92,8 +119,16 @@ pub async fn compute_monthly_network(
     let total_req_body: i64 = rows.iter().map(|r| r.req_body_bytes).sum();
     let total_resp_body: i64 = rows.iter().map(|r| r.resp_body_bytes).sum();
 
-    let mean_req_body_bytes = if total_req_count > 0 { total_req_body / total_req_count } else { 0 };
-    let mean_resp_body_bytes = if total_req_count > 0 { total_resp_body / total_req_count } else { 0 };
+    let mean_req_body_bytes = if total_req_count > 0 {
+        total_req_body / total_req_count
+    } else {
+        0
+    };
+    let mean_resp_body_bytes = if total_req_count > 0 {
+        total_resp_body / total_req_count
+    } else {
+        0
+    };
 
     // Determine charge: P95 model if price_egress_p95_mbps_month > 0, else per-GB
     let price_p95 = cfg(state, "price_egress_p95_mbps_month", 0.0).await;
@@ -108,22 +143,33 @@ pub async fn compute_monthly_network(
         p95_egress_mbps,
         total_egress_bytes,
         total_ingress_bytes,
-        mean_req_body_bytes, mean_resp_body_bytes, total_req_count,
+        mean_req_body_bytes,
+        mean_resp_body_bytes,
+        total_req_count,
         egress_charge,
     })
 }
 
 /// Compute and upsert monthly_network_charges for all projects for a given month.
 /// Idempotent — safe to re-run.
-pub async fn apply_monthly_network_charges(state: &AppState, billing_month: &str) -> AppResult<u32> {
+pub async fn apply_monthly_network_charges(
+    state: &AppState,
+    billing_month: &str,
+) -> AppResult<u32> {
     // Parse month string "YYYY-MM"
     let (year, month): (i32, u32) = {
         let parts: Vec<&str> = billing_month.split('-').collect();
         if parts.len() != 2 {
             return Err(AppError::BadRequest("billing_month must be YYYY-MM".into()));
         }
-        (parts[0].parse().map_err(|_| AppError::BadRequest("bad year".into()))?,
-         parts[1].parse().map_err(|_| AppError::BadRequest("bad month".into()))?)
+        (
+            parts[0]
+                .parse()
+                .map_err(|_| AppError::BadRequest("bad year".into()))?,
+            parts[1]
+                .parse()
+                .map_err(|_| AppError::BadRequest("bad month".into()))?,
+        )
     };
     let month_start = NaiveDate::from_ymd_opt(year, month, 1)
         .ok_or_else(|| AppError::BadRequest("invalid date".into()))?;
@@ -131,7 +177,8 @@ pub async fn apply_monthly_network_charges(state: &AppState, billing_month: &str
         NaiveDate::from_ymd_opt(year + 1, 1, 1)
     } else {
         NaiveDate::from_ymd_opt(year, month + 1, 1)
-    }.ok_or_else(|| AppError::Internal("date overflow".into()))?;
+    }
+    .ok_or_else(|| AppError::Internal("date overflow".into()))?;
 
     // All projects that have samples in this month
     let projects = sqlx::query!(
@@ -147,8 +194,11 @@ pub async fn apply_monthly_network_charges(state: &AppState, billing_month: &str
 
     let mut charged = 0u32;
     for proj in projects {
-        let stats = compute_monthly_network(state, &proj.project_id, month_start, month_end).await?;
-        if stats.egress_charge == 0.0 { continue; }
+        let stats =
+            compute_monthly_network(state, &proj.project_id, month_start, month_end).await?;
+        if stats.egress_charge == 0.0 {
+            continue;
+        }
 
         let id = Uuid::new_v4().to_string();
         sqlx::query!(
@@ -188,7 +238,10 @@ pub async fn apply_monthly_network_charges(state: &AppState, billing_month: &str
 }
 
 /// Deduct pending network charges for a billing month from user wallets.
-pub async fn collect_monthly_network_charges(state: &AppState, billing_month: &str) -> AppResult<Vec<String>> {
+pub async fn collect_monthly_network_charges(
+    state: &AppState,
+    billing_month: &str,
+) -> AppResult<Vec<String>> {
     let charges = sqlx::query!(
         r#"SELECT id, user_id, project_id, egress_charge
            FROM monthly_network_charges
@@ -198,6 +251,8 @@ pub async fn collect_monthly_network_charges(state: &AppState, billing_month: &s
     .fetch_all(&state.db)
     .await?;
 
+    let currency = billing_currency(state).await;
+
     let mut collected: Vec<String> = Vec::new();
     for c in charges {
         let amount = {
@@ -205,36 +260,28 @@ pub async fn collect_monthly_network_charges(state: &AppState, billing_month: &s
             c.egress_charge.to_f64().unwrap_or(0.0)
         };
 
-        // Deduct from wallet
+        // Wrap wallet debit + transaction insert in a SQL transaction
+        let mut tx = state.db.begin().await?;
         let tx_id = Uuid::new_v4().to_string();
-        let res = sqlx::query!(
-            r#"UPDATE user_wallets
-               SET balance = balance - ?,
-                   updated_at = NOW()
-               WHERE user_id = ?"#,
-            amount,
-            c.user_id,
-        )
-        .execute(&state.db)
-        .await?;
 
-        if res.rows_affected() == 0 {
-            // No wallet yet — create with negative balance
-            sqlx::query!(
-                r#"INSERT INTO user_wallets (user_id, balance, currency)
-                   VALUES (?, -?, 'CNY')
-                   ON DUPLICATE KEY UPDATE balance = balance - ?"#,
-                c.user_id, amount, amount
-            )
-            .execute(&state.db)
-            .await?;
-        }
+        // Upsert wallet: deduct or create with negative balance
+        sqlx::query!(
+            r#"INSERT INTO user_wallets (user_id, balance, currency)
+               VALUES (?, -?, ?)
+               ON DUPLICATE KEY UPDATE balance = balance - ?"#,
+            c.user_id,
+            amount,
+            currency,
+            amount
+        )
+        .execute(&mut *tx)
+        .await?;
 
         let new_balance: f64 = sqlx::query_scalar!(
             r#"SELECT CAST(balance AS DOUBLE) FROM user_wallets WHERE user_id = ?"#,
             c.user_id
         )
-        .fetch_one(&state.db)
+        .fetch_one(&mut *tx)
         .await?;
 
         sqlx::query!(
@@ -248,7 +295,7 @@ pub async fn collect_monthly_network_charges(state: &AppState, billing_month: &s
             format!("LB network charge {billing_month}"),
             c.id,
         )
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
 
         sqlx::query!(
@@ -257,8 +304,10 @@ pub async fn collect_monthly_network_charges(state: &AppState, billing_month: &s
                WHERE id = ?"#,
             c.id,
         )
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         collected.push(c.project_id.clone());
         tracing::info!(project_id = %c.project_id, amount, "network charge collected");
@@ -278,10 +327,14 @@ pub async fn apply_overdue_charges(state: &AppState) -> AppResult<u32> {
     .fetch_optional(&state.db)
     .await?
     .unwrap_or(0);
-    if enabled == 0 { return Ok(0); }
+    if enabled == 0 {
+        return Ok(0);
+    }
 
     let fee_pct = cfg(state, "billing_overdue_daily_fee_pct", 0.05).await / 100.0;
-    if fee_pct <= 0.0 { return Ok(0); }
+    if fee_pct <= 0.0 {
+        return Ok(0);
+    }
 
     let today = Utc::now().date_naive();
     let today_str = today.format("%Y-%m-%d").to_string();
@@ -303,52 +356,61 @@ pub async fn apply_overdue_charges(state: &AppState) -> AppResult<u32> {
     let mut applied = 0u32;
     for u in users {
         let balance = u.balance;
-        if balance >= 0.0 { continue; }
+        if balance >= 0.0 {
+            continue;
+        }
 
         let fee_amount = (-balance * fee_pct * 10000.0).round() / 10000.0;
         let id = Uuid::new_v4().to_string();
+        let tx_id = Uuid::new_v4().to_string();
+
+        // Atomic: overdue record + wallet debit + transaction log
+        let mut db_tx = state.db.begin().await?;
 
         sqlx::query!(
             r#"INSERT IGNORE INTO overdue_charges
                  (id, user_id, charge_date, overdue_balance, fee_pct, fee_amount, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'PENDING')"#,
-            id, u.user_id, today_str, balance, fee_pct, fee_amount,
+               VALUES (?, ?, ?, ?, ?, ?, 'APPLIED')"#,
+            id,
+            u.user_id,
+            today_str,
+            balance,
+            fee_pct,
+            fee_amount,
         )
-        .execute(&state.db)
+        .execute(&mut *db_tx)
         .await?;
 
-        // Immediately apply to wallet
-        let tx_id = Uuid::new_v4().to_string();
         sqlx::query!(
             r#"UPDATE user_wallets SET balance = balance - ?, updated_at = NOW()
                WHERE user_id = ?"#,
-            fee_amount, u.user_id,
+            fee_amount,
+            u.user_id,
         )
-        .execute(&state.db)
+        .execute(&mut *db_tx)
         .await?;
 
         let new_balance: f64 = sqlx::query_scalar!(
             r#"SELECT CAST(balance AS DOUBLE) FROM user_wallets WHERE user_id = ?"#,
             u.user_id
         )
-        .fetch_one(&state.db)
+        .fetch_one(&mut *db_tx)
         .await?;
 
         sqlx::query!(
             r#"INSERT INTO wallet_transactions
                  (id, user_id, tx_type, amount, balance_after, description, ref_id)
                VALUES (?, ?, 'DEDUCTION', ?, ?, 'overdue daily fee', ?)"#,
-            tx_id, u.user_id, -fee_amount, new_balance, id,
-        )
-        .execute(&state.db)
-        .await?;
-
-        sqlx::query!(
-            r#"UPDATE overdue_charges SET status = 'APPLIED' WHERE id = ?"#,
+            tx_id,
+            u.user_id,
+            -fee_amount,
+            new_balance,
             id,
         )
-        .execute(&state.db)
+        .execute(&mut *db_tx)
         .await?;
+
+        db_tx.commit().await?;
 
         applied += 1;
         tracing::warn!(user_id = %u.user_id, balance, fee_amount, "overdue charge applied");
@@ -367,9 +429,9 @@ pub async fn apply_overdue_charges(state: &AppState) -> AppResult<u32> {
 ///   price_db_hour         (default 0.0) — cost per active DB instance per hour
 pub async fn take_hourly_usage_snapshots(state: &AppState) -> AppResult<u32> {
     // Pricing knobs (all default to 0 so cost stays 0 unless admin configures them)
-    let price_cpu  = cfg(state, "price_cpu_mcore_hour", 0.0).await;
-    let price_mem  = cfg(state, "price_mem_mb_hour",    0.0).await;
-    let price_db   = cfg(state, "price_db_hour",        0.0).await;
+    let price_cpu = cfg(state, "price_cpu_mcore_hour", 0.0).await;
+    let price_mem = cfg(state, "price_mem_mb_hour", 0.0).await;
+    let price_db = cfg(state, "price_db_hour", 0.0).await;
 
     // Aggregate per-user resource usage across running apps
     let app_rows = sqlx::query!(
@@ -407,9 +469,9 @@ pub async fn take_hourly_usage_snapshots(state: &AppState) -> AppResult<u32> {
     for r in app_rows {
         let e = usage.entry(r.user_id).or_default();
         use rust_decimal::prelude::ToPrimitive;
-        e.app_count  = r.app_count as u32;
+        e.app_count = r.app_count as u32;
         e.cpu_mcores = r.cpu_mcores.to_u64().unwrap_or(0);
-        e.mem_mb     = r.mem_mb.to_u64().unwrap_or(0);
+        e.mem_mb = r.mem_mb.to_u64().unwrap_or(0);
     }
     for r in db_rows {
         usage.entry(r.user_id).or_default().db_count = r.db_count as u32;
@@ -419,18 +481,17 @@ pub async fn take_hourly_usage_snapshots(state: &AppState) -> AppResult<u32> {
         return Ok(0);
     }
 
-    let snapshot_time: String = sqlx::query_scalar!(
-        r#"SELECT DATE_FORMAT(NOW(), '%Y-%m-%d %H:00:00')"#
-    )
-    .fetch_one(&state.db)
-    .await?
-    .unwrap_or_default();
+    let snapshot_time: String =
+        sqlx::query_scalar!(r#"SELECT DATE_FORMAT(NOW(), '%Y-%m-%d %H:00:00')"#)
+            .fetch_one(&state.db)
+            .await?
+            .unwrap_or_default();
 
     let mut written = 0u32;
     for (user_id, u) in &usage {
         let cost = u.cpu_mcores as f64 * price_cpu
-                 + u.mem_mb    as f64 * price_mem
-                 + u.db_count  as f64 * price_db;
+            + u.mem_mb as f64 * price_mem
+            + u.db_count as f64 * price_db;
         let cost_dec = (cost * 10_000.0).round() / 10_000.0;
 
         let id = Uuid::new_v4().to_string();

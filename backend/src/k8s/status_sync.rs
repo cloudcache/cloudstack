@@ -4,6 +4,7 @@
 //! Called every 30 s from main.rs. Non-fatal — errors are logged and skipped.
 
 use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, ListParams};
 
 use crate::{error::AppResult, state::AppState};
@@ -12,7 +13,7 @@ use crate::{error::AppResult, state::AppState};
 pub async fn sync_app_statuses(state: &AppState) -> AppResult<()> {
     // Find all apps that are in a transitional state across all clusters
     let deploying = sqlx::query!(
-        r#"SELECT a.id, a.name, a.project_id, a.pool_id,
+        r#"SELECT a.id, a.name, a.project_id, a.cluster_id,
                   p.name AS ns
            FROM apps a
            JOIN projects p ON p.id = a.project_id
@@ -26,19 +27,12 @@ pub async fn sync_app_statuses(state: &AppState) -> AppResult<()> {
     }
 
     for app in deploying {
-        let Some(pool_id) = app.pool_id else { continue };
+        let Some(ref cluster_id) = app.cluster_id else {
+            continue;
+        };
+        let cluster_id: &str = cluster_id.as_str();
 
-        // Find the active cluster for this pool
-        let cluster_id = sqlx::query_scalar!(
-            r#"SELECT id FROM clusters WHERE pool_id = ? AND is_active = 1 ORDER BY created_at LIMIT 1"#,
-            pool_id
-        )
-        .fetch_optional(&state.db)
-        .await?;
-
-        let Some(cluster_id) = cluster_id else { continue };
-
-        let client = match super::client_for_cluster(state, &cluster_id).await {
+        let client = match super::client_for_cluster(state, cluster_id).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!("status_sync: cluster {cluster_id} unreachable: {e}");
@@ -46,16 +40,14 @@ pub async fn sync_app_statuses(state: &AppState) -> AppResult<()> {
             }
         };
 
-        let deploy_api: Api<Deployment> = Api::namespaced(client, &app.ns);
+        let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), &app.ns);
         let deployment = match deploy_api.get_opt(&app.name).await {
             Ok(Some(d)) => d,
             Ok(None) => {
                 // Deployment was deleted externally — mark STOPPED
-                let _ = sqlx::query!(
-                    r#"UPDATE apps SET status = 'STOPPED' WHERE id = ?"#, app.id
-                )
-                .execute(&state.db)
-                .await;
+                let _ = sqlx::query!(r#"UPDATE apps SET status = 'STOPPED' WHERE id = ?"#, app.id)
+                    .execute(&state.db)
+                    .await;
                 continue;
             }
             Err(e) => {
@@ -74,6 +66,27 @@ pub async fn sync_app_statuses(state: &AppState) -> AppResult<()> {
             .execute(&state.db)
             .await?;
             tracing::info!(app_id = %app.id, app_name = %app.name, %status, "app status updated");
+
+            // Record pod IP from CNI when app reaches RUNNING
+            if status == "RUNNING" {
+                let pod_api: Api<Pod> = Api::namespaced(client.clone(), &app.ns);
+                if let Ok(pods) = pod_api
+                    .list(&ListParams::default().labels(&format!("qs-app={}", app.name)))
+                    .await
+                {
+                    if let Some(ip) = pods
+                        .items
+                        .first()
+                        .and_then(|p| p.status.as_ref()?.pod_ip.clone())
+                    {
+                        if let Err(e) =
+                            super::network::record_pod_ip(state, &app.id, cluster_id, &ip).await
+                        {
+                            tracing::warn!(app_id = %app.id, "record_pod_ip: {e}");
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -87,7 +100,7 @@ fn classify_deployment(d: &Deployment) -> Option<&'static str> {
     let status = d.status.as_ref()?;
 
     let available = status.available_replicas.unwrap_or(0);
-    let ready     = status.ready_replicas.unwrap_or(0);
+    let ready = status.ready_replicas.unwrap_or(0);
 
     // Check for a "ReplicaFailure" or "Progressing=False" condition
     if let Some(conditions) = &status.conditions {

@@ -1,0 +1,101 @@
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import React, { useEffect } from "react";
+import { BackendApp } from "@/server/adapter/backend-api.adapter";
+import { getLatestAppEvents } from "./actions";
+import { toast } from "sonner";
+import FullLoadingSpinner from "@/components/ui/full-loading-spinnter";
+import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { EventInfoModel } from "@/shared/model/event-info.model";
+import { formatDateTime } from "@/frontend/utils/format.utils";
+import { ScrollArea } from "@radix-ui/react-scroll-area";
+import { cn } from "@/frontend/utils/utils";
+import { useT } from "@/i18n";
+
+export function AppEventsDialog({
+  app,
+  children
+}: {
+  app: BackendApp;
+  children: React.ReactNode;
+}) {
+
+  const t = useT();
+  const [isOpen, setIsOpen] = React.useState(false);
+  const [events, setEvents] = React.useState<EventInfoModel[] | undefined>(undefined);
+
+  const loadEvents = async () => {
+    try {
+      const eventsResponse = await getLatestAppEvents(app.id);
+      if (eventsResponse.status === 'success') {
+        setEvents(eventsResponse.data);
+      } else {
+        toast.error(eventsResponse.message);
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error(t('app.events.loadFailed'));
+    }
+  }
+
+  useEffect(() => {
+    if (isOpen) {
+      loadEvents();
+    } else {
+      setEvents(undefined);
+    }
+  }, [isOpen]);
+
+  return (<>
+    <div onClick={() => setIsOpen(true)} className="cursor-pointer"> {children}</div>
+    <Dialog open={isOpen} onOpenChange={(isO) => {
+      setIsOpen(isO);
+    }}>
+      <DialogContent className="sm:max-w-[1000px]">
+        <DialogHeader>
+          <DialogTitle>{t('app.events.title')}</DialogTitle>
+          <DialogDescription>
+            {t('app.events.description')}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          {!events && <FullLoadingSpinner />}
+          {events && <>
+            <Table>
+              <ScrollArea className="max-h-[70vh]">
+                <TableCaption>{t('app.events.count', { count: events.length })}</TableCaption>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('common.time')}</TableHead>
+                    <TableHead>{t('common.type')}</TableHead>
+                    <TableHead>{t('common.action')}</TableHead>
+                    <TableHead>{t('app.events.note')}</TableHead>
+                    <TableHead>{t('app.events.podName')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {events.map((event, index) => (
+                    <TableRow key={(event.eventTime + '') || index}>
+                      <TableCell>{formatDateTime(event.eventTime, true)}</TableCell>
+                      <TableCell >{event.action}</TableCell>
+                      <TableCell className={cn("font-medium", event.type !== 'Normal' ? 'text-orange-500' : '')}>
+                        {event.reason}
+                      </TableCell>
+                      <TableCell >{event.note}</TableCell>
+                      <TableCell >{event.podName}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </ScrollArea>
+            </Table>
+          </>}
+        </div>
+      </DialogContent>
+    </Dialog>
+  </>)
+}

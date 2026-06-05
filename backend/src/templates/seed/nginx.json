@@ -1,0 +1,33 @@
+{
+  "slug": "nginx",
+  "name": "NGINX",
+  "icon_url": "https://cdn.simpleicons.org/nginx",
+  "category": "app",
+  "image_repository": "nginx",
+  "image_tag": "alpine",
+  "spec": {
+    "appModel": {
+      "name": "NGINX",
+      "appType": "APP",
+      "sourceType": "CONTAINER",
+      "containerImageSource": "",
+      "replicas": 1,
+      "ingressNetworkPolicy": "ALLOW_ALL",
+      "egressNetworkPolicy": "ALLOW_ALL",
+      "envVars": "",
+      "useNetworkPolicy": true,
+      "healthCheckPeriodSeconds": 15,
+      "healthCheckTimeoutSeconds": 5,
+      "healthCheckFailureThreshold": 3
+    },
+    "appDomains": [],
+    "appVolumes": [],
+    "appFileMounts": [],
+    "appPorts": [
+      {
+        "port": 80
+      }
+    ]
+  },
+  "inputs": []
+}
