@@ -25,8 +25,14 @@ struct NodeRow {
     last_seen_at: Option<chrono::NaiveDateTime>,
     cluster_id: Option<String>,
     cluster_name: Option<String>,
+    cluster_display_name: Option<String>,
+    cluster_orchestrator: Option<String>,
     pool_name: Option<String>,
     pool_display_name: Option<String>,
+    ip_pool_id: Option<String>,
+    ip_pool_name: Option<String>,
+    ip_pool_cidr: Option<String>,
+    ip_pool_gateway: Option<String>,
 }
 
 /// GET /admin/nodes  — lists all nodes across all clusters
@@ -37,16 +43,21 @@ pub async fn list(
     if !auth.is_global_admin { return Err(AppError::Forbidden("admin only".into())); }
 
     let rows = sqlx::query_as::<_, NodeRow>(
-        r#"SELECT n.id, n.hostname, n.ip_address, n.node_role, n.has_gpu, n.gpu_model,
-                  n.gpu_count, n.node_status, n.provision_error,
-                  n.cpu_capacity_mcores, n.mem_capacity_mb,
-                  n.storage_available, n.storage_path, n.pod_cidr, n.ldap_auth_active,
-                  n.last_seen_at, n.cluster_id,
-                  c.name AS cluster_name, p.name AS pool_name, p.display_name AS pool_display_name
-           FROM cluster_nodes n
-           LEFT JOIN clusters c ON c.id = n.cluster_id
-           LEFT JOIN resource_pools p ON p.id = c.pool_id
-           ORDER BY p.name, c.name, n.hostname"#
+        "SELECT n.id, n.hostname, n.ip_address, n.node_role, n.has_gpu, n.gpu_model, \
+                n.gpu_count, n.node_status, n.provision_error, \
+                n.cpu_capacity_mcores, n.mem_capacity_mb, \
+                n.storage_available, n.storage_path, n.pod_cidr, n.ldap_auth_active, \
+                n.last_seen_at, n.cluster_id, \
+                c.name AS cluster_name, c.display_name AS cluster_display_name, \
+                c.orchestrator AS cluster_orchestrator, \
+                p.name AS pool_name, p.display_name AS pool_display_name, \
+                c.ip_pool_id AS ip_pool_id, \
+                ip.name AS ip_pool_name, ip.cidr AS ip_pool_cidr, ip.gateway AS ip_pool_gateway \
+         FROM cluster_nodes n \
+         LEFT JOIN clusters c ON c.id = n.cluster_id \
+         LEFT JOIN resource_pools p ON p.id = c.pool_id \
+         LEFT JOIN ip_pools ip ON ip.id = c.ip_pool_id \
+         ORDER BY p.name, c.name, n.hostname",
     )
     .fetch_all(&state.db)
     .await?;
@@ -70,8 +81,14 @@ pub async fn list(
         "last_seen_at": r.last_seen_at,
         "cluster_id": r.cluster_id,
         "cluster_name": r.cluster_name,
+        "cluster_display_name": r.cluster_display_name,
+        "cluster_orchestrator": r.cluster_orchestrator,
         "pool_name": r.pool_name,
         "pool_display_name": r.pool_display_name,
+        "ip_pool_id": r.ip_pool_id,
+        "ip_pool_name": r.ip_pool_name,
+        "ip_pool_cidr": r.ip_pool_cidr,
+        "ip_pool_gateway": r.ip_pool_gateway,
     })).collect::<Vec<_>>())))
 }
 

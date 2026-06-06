@@ -47,7 +47,12 @@ export default function UserLoginForm() {
                 redirect: false,
             });
             if (result?.error) {
-                setErrorMessages(result.error);
+                // Surface email-verification errors with a CTA instead of raw message
+                if (result.error === 'EMAIL_NOT_VERIFIED' || result.error.includes('EMAIL_NOT_VERIFIED')) {
+                    setErrorMessages('请先在邮箱里完成验证 — 没收到邮件？');
+                } else {
+                    setErrorMessages(result.error);
+                }
             } else {
                 redirectToProjects();
             }

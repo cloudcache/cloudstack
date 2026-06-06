@@ -1,5 +1,5 @@
 use axum::{extract::State, response::IntoResponse, Extension, Json};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
@@ -91,6 +91,20 @@ pub async fn login(
 
     if user.is_active == 0 {
         return Err(AppError::Forbidden("account disabled".into()));
+    }
+
+    // P0.2 — refuse login until the user has verified their email address.
+    // Existing users default to email_verified=1 in the migration, so this
+    // only impacts new signups after the rollout.
+    let email_verified: i8 = sqlx::query_scalar::<_, i8>(
+        "SELECT email_verified FROM users WHERE id = ?",
+    )
+    .bind(&user_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(1);
+    if email_verified == 0 {
+        return Err(AppError::Forbidden("EMAIL_NOT_VERIFIED".into()));
     }
 
     // TOTP verification (if enabled)
@@ -362,7 +376,22 @@ pub async fn register(
     .execute(&state.db)
     .await?;
 
-    // Send welcome email (non-fatal)
+    // P0.2 — email verification: generate token, mark unverified, send mail.
+    // First user (auto-admin) is auto-verified to avoid a chicken-and-egg lockout.
+    let verification_token = format!("{:x}", rand::random::<u128>());
+    let auto_verify: i8 = if is_first_user { 1 } else { 0 };
+    sqlx::query(
+        "UPDATE users SET email_verified = ?, \
+                          email_verification_token = ?, \
+                          email_verification_sent_at = NOW() \
+         WHERE id = ?",
+    )
+    .bind(auto_verify)
+    .bind(&verification_token)
+    .bind(&id)
+    .execute(&state.db)
+    .await?;
+
     let platform_name = sqlx::query_scalar!(
         r#"SELECT `value` FROM platform_config WHERE `key` = 'platform_display_name'"#
     )
@@ -370,21 +399,37 @@ pub async fn register(
     .await?
     .unwrap_or_else(|| "QuickStack".to_string());
 
-    let login_url = format!("{}/login", state.config.server.host);
-    let _ = state
-        .mailer
-        .send_registration_success(&body.email, &body.username, &login_url, &platform_name)
-        .await;
+    if !is_first_user {
+        let verify_url = format!(
+            "{}/verify-email?token={}", state.config.server.host, verification_token,
+        );
+        let _ = state
+            .mailer
+            .send_email_verification(&body.email, &body.username, &verify_url, &platform_name)
+            .await;
+    } else {
+        let login_url = format!("{}/login", state.config.server.host);
+        let _ = state
+            .mailer
+            .send_registration_success(&body.email, &body.username, &login_url, &platform_name)
+            .await;
+    }
 
     let msg = if require_approval == "1" {
         "注册成功，等待管理员审批后即可登录"
+    } else if !is_first_user {
+        "注册成功，请前往邮箱完成验证"
     } else {
         "注册成功"
     };
 
     Ok((
         axum::http::StatusCode::CREATED,
-        Json(serde_json::json!({ "id": id, "message": msg })),
+        Json(serde_json::json!({
+            "id": id,
+            "message": msg,
+            "email_verification_required": !is_first_user,
+        })),
     ))
 }
 
@@ -522,13 +567,17 @@ pub async fn reset_password(
     .execute(&state.db)
     .await?;
 
-    // Revoke all existing sessions
+    // Revoke all existing sessions and refresh tokens
     sqlx::query!(
         r#"DELETE FROM user_sessions WHERE user_id = ?"#,
         row.user_id
     )
     .execute(&state.db)
     .await?;
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
+        .bind(&row.user_id)
+        .execute(&state.db)
+        .await?;
 
     Ok(Json(
         serde_json::json!({ "message": "密码重置成功，请重新登录" }),
@@ -598,9 +647,9 @@ pub async fn refresh(
     let rt_hash = CryptoService::sha256_hex(&body.refresh_token);
 
     // Validate refresh token: must exist and not be expired.
-    // refresh_tokens.expires_at is TIMESTAMP — decode as DateTime<Utc>, not NaiveDateTime.
+    // refresh_tokens.expires_at is DATETIME (normalized in migration 024).
     #[derive(sqlx::FromRow)]
-    struct RtRow { id: String, user_id: String, expires_at: DateTime<Utc> }
+    struct RtRow { id: String, user_id: String, expires_at: chrono::NaiveDateTime }
 
     let row: RtRow = sqlx::query_as(
         "SELECT id, user_id, expires_at FROM refresh_tokens WHERE token_hash = ?",
@@ -610,7 +659,7 @@ pub async fn refresh(
     .await?
     .ok_or_else(|| AppError::Unauthorized("invalid refresh token".into()))?;
 
-    if Utc::now() > row.expires_at {
+    if Utc::now().naive_utc() > row.expires_at {
         let _ = sqlx::query("DELETE FROM refresh_tokens WHERE id = ?")
             .bind(&row.id).execute(&state.db).await;
         return Err(AppError::Unauthorized("refresh token expired".into()));
@@ -824,8 +873,7 @@ pub(crate) async fn issue_session(
     .bind(Uuid::new_v4().to_string())
     .bind(user_id)
     .bind(&refresh_hash)
-    // refresh_tokens.expires_at is TIMESTAMP — bind DateTime<Utc>, not NaiveDateTime
-    .bind(refresh_expires)
+    .bind(refresh_expires.naive_utc())
     .execute(&state.db)
     .await?;
 
@@ -889,7 +937,7 @@ pub(crate) fn hash_password(password: &str) -> AppResult<String> {
 }
 
 /// Verify a password against an argon2 PHC string.
-fn verify_password(password: &str, hash: &str) -> bool {
+pub(crate) fn verify_password(password: &str, hash: &str) -> bool {
     use argon2::{password_hash::PasswordHash, Argon2, PasswordVerifier};
     let Ok(parsed) = PasswordHash::new(hash) else {
         return false;
@@ -897,4 +945,123 @@ fn verify_password(password: &str, hash: &str) -> bool {
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()
+}
+
+// ─── Email verification (P0.2) ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct VerifyEmailRequest { pub token: String }
+
+/// POST /auth/verify-email  { token }
+///
+/// Marks the user's email_verified=1 if the token matches and was sent within
+/// the past 24 hours. Tokens are single-use — successful verification clears
+/// the token column so it can't be replayed.
+pub async fn verify_email(
+    State(state): State<AppState>,
+    Json(body): Json<VerifyEmailRequest>,
+) -> AppResult<impl IntoResponse> {
+    if body.token.is_empty() {
+        return Err(AppError::BadRequest("token required".into()));
+    }
+    #[derive(sqlx::FromRow)]
+    struct Row { id: String, sent_at: Option<chrono::NaiveDateTime> }
+    let row: Row = sqlx::query_as(
+        "SELECT id, email_verification_sent_at AS sent_at \
+         FROM users WHERE email_verification_token = ?",
+    )
+    .bind(&body.token)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::BadRequest("invalid or expired token".into()))?;
+
+    // 24h expiry — if older, force user to re-request via resend
+    if let Some(sent) = row.sent_at {
+        let age = chrono::Utc::now().naive_utc() - sent;
+        if age > chrono::Duration::hours(24) {
+            return Err(AppError::BadRequest("token expired — please request a new one".into()));
+        }
+    }
+
+    sqlx::query(
+        "UPDATE users SET email_verified = 1, \
+                          email_verification_token = NULL, \
+                          email_verification_sent_at = NULL \
+         WHERE id = ?",
+    )
+    .bind(&row.id)
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct ResendVerificationRequest { pub email: String }
+
+/// POST /auth/resend-verification  { email }
+///
+/// Rotates the verification token (if the account exists, is unverified, and
+/// last sent > 60 seconds ago). Response is intentionally vague to avoid
+/// leaking whether the email is registered.
+pub async fn resend_verification(
+    State(state): State<AppState>,
+    Json(body): Json<ResendVerificationRequest>,
+) -> AppResult<impl IntoResponse> {
+    if !body.email.contains('@') {
+        return Err(AppError::BadRequest("invalid email".into()));
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        id: String, username: String, email_verified: i8,
+        last_sent: Option<chrono::NaiveDateTime>,
+    }
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT id, username, email_verified, \
+                email_verification_sent_at AS last_sent \
+         FROM users WHERE email = ?",
+    )
+    .bind(&body.email)
+    .fetch_optional(&state.db)
+    .await?;
+
+    if let Some(r) = row {
+        if r.email_verified == 0 {
+            // Rate limit: 60s between sends
+            if let Some(last) = r.last_sent {
+                let age = chrono::Utc::now().naive_utc() - last;
+                if age < chrono::Duration::seconds(60) {
+                    return Err(AppError::Conflict(
+                        "please wait before requesting another verification email".into(),
+                    ));
+                }
+            }
+            let token = format!("{:x}", rand::random::<u128>());
+            sqlx::query(
+                "UPDATE users SET email_verification_token = ?, \
+                                  email_verification_sent_at = NOW() WHERE id = ?",
+            )
+            .bind(&token).bind(&r.id)
+            .execute(&state.db).await?;
+
+            let platform_name = sqlx::query_scalar!(
+                r#"SELECT `value` FROM platform_config WHERE `key` = 'platform_display_name'"#
+            )
+            .fetch_optional(&state.db)
+            .await?
+            .unwrap_or_else(|| "QuickStack".to_string());
+
+            let verify_url = format!(
+                "{}/verify-email?token={}", state.config.server.host, token
+            );
+            let _ = state
+                .mailer
+                .send_email_verification(&body.email, &r.username, &verify_url, &platform_name)
+                .await;
+        }
+    }
+
+    // Always succeed (don't leak whether the email exists)
+    Ok(Json(serde_json::json!({ "ok": true })))
 }

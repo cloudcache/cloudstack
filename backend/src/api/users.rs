@@ -347,13 +347,17 @@ pub async fn update(
         other => AppError::Database(other),
     })?;
 
-    // If account was deactivated, revoke all sessions immediately
+    // If account was deactivated, revoke all sessions and refresh tokens immediately
     if body.is_active == Some(false) {
         let _ = sqlx::query!(
             r#"DELETE FROM user_sessions WHERE user_id = ?"#, id
         )
         .execute(&state.db)
         .await;
+        let _ = sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
+            .bind(&id)
+            .execute(&state.db)
+            .await;
     }
 
     Ok(axum::http::StatusCode::NO_CONTENT)
@@ -419,13 +423,17 @@ pub async fn reset_password(
 
     state.lldap.change_password(&username, &body.new_password).await?;
 
-    // Revoke all sessions so user must re-login with new password
+    // Revoke all sessions and refresh tokens so user must re-login with new password
     sqlx::query!(
         r#"DELETE FROM user_sessions WHERE user_id = ?"#,
         id
     )
     .execute(&state.db)
     .await?;
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

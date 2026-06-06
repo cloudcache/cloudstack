@@ -6,6 +6,7 @@ import ProjectOverview from "./project-overview";
 import PageTitle from "@/components/custom/page-title";
 import ProjectBreadcrumbs from "./project-breadcrumbs";
 import CreateProjectActions from "./create-project-actions";
+import ManagedUsagePanel from "./managed-usage-panel";
 import { BackendUnavailable } from "@/components/custom/backend-unavailable";
 import { getT } from "@/i18n/server";
 
@@ -56,6 +57,7 @@ export default async function AppsPage(props: {
                 projectId={project.id}
                 canCreateApps={canCreateApps}
                 canDeleteApps={canDeleteApps} />
+            <ManagedUsagePanel projectId={project.id} />
             <ProjectBreadcrumbs project={project as any} />
         </div>
     )

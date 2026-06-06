@@ -23,6 +23,48 @@ pub async fn list_pools(
     .fetch_all(&state.db)
     .await?;
 
+    // Bindings: for each ip_pool, which clusters use it and how many nodes
+    // does each of those clusters have. Fetched once and grouped in memory
+    // (avoids N+1 queries).
+    #[derive(sqlx::FromRow)]
+    struct BindingRow {
+        ip_pool_id: String,
+        cluster_id: String,
+        cluster_name: String,
+        cluster_display_name: Option<String>,
+        resource_pool_name: String,
+        resource_pool_display_name: Option<String>,
+        node_count: i64,
+    }
+    let bindings: Vec<BindingRow> = sqlx::query_as(
+        "SELECT c.ip_pool_id AS ip_pool_id, \
+                c.id AS cluster_id, \
+                c.name AS cluster_name, \
+                c.display_name AS cluster_display_name, \
+                rp.name AS resource_pool_name, \
+                rp.display_name AS resource_pool_display_name, \
+                COUNT(n.id) AS node_count \
+         FROM clusters c \
+         JOIN resource_pools rp ON rp.id = c.pool_id \
+         LEFT JOIN cluster_nodes n ON n.cluster_id = c.id \
+         WHERE c.ip_pool_id IS NOT NULL \
+         GROUP BY c.id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut by_pool: std::collections::HashMap<String, Vec<serde_json::Value>> = Default::default();
+    for b in &bindings {
+        by_pool.entry(b.ip_pool_id.clone()).or_default().push(serde_json::json!({
+            "cluster_id":               b.cluster_id,
+            "cluster_name":             b.cluster_name,
+            "cluster_display_name":     b.cluster_display_name,
+            "resource_pool_name":       b.resource_pool_name,
+            "resource_pool_display_name": b.resource_pool_display_name,
+            "node_count":               b.node_count,
+        }));
+    }
+
     Ok(Json(serde_json::json!(rows.iter().map(|r| serde_json::json!({
         "id": r.id,
         "name": r.name,
@@ -34,6 +76,7 @@ pub async fn list_pools(
         "allocated_count": r.allocated_count,
         "total_count": cidr_size(&r.cidr),
         "created_at": r.created_at,
+        "bindings": by_pool.get(&r.id).cloned().unwrap_or_default(),
     })).collect::<Vec<_>>())))
 }
 
@@ -154,6 +197,20 @@ pub async fn delete_pool(
     Path(id): Path<String>,
 ) -> AppResult<impl IntoResponse> {
     if !auth.is_global_admin { return Err(AppError::Forbidden("admin only".into())); }
+
+    // Refuse delete if a cluster still references this pool (FK is ON DELETE
+    // SET NULL — silently severing the binding would surprise admins).
+    let cluster_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM clusters WHERE ip_pool_id = ?",
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
+    if cluster_count > 0 {
+        return Err(AppError::Conflict(format!(
+            "pool is bound to {cluster_count} cluster(s); detach them first"
+        )));
+    }
 
     let count = sqlx::query_scalar!(
         r#"SELECT COUNT(*) FROM ip_allocations WHERE pool_id = ?"#, id

@@ -321,19 +321,19 @@ export const deletePlan = async (id: string) =>
 
 // ── Admin Billing ─────────────────────────────────────────────────────────────
 
-export const adminRecharge = async (userId: string, amount: number, description?: string) =>
+export const adminRecharge = async (userId: string, amount: number, description: string, idempotencyKey?: string) =>
     simpleAction(async () => {
         await getAdminUserSession();
         const token = await getBackendToken();
-        const result = await backend.adminBilling.recharge(token, userId, amount, description);
+        const result = await backend.adminBilling.recharge(token, userId, amount, description, idempotencyKey);
         return new SuccessActionResult(result, `Recharged ¥${amount.toFixed(2)} successfully.`);
     });
 
-export const adminAdjustBalance = async (userId: string, amount: number, description: string) =>
+export const adminAdjustBalance = async (userId: string, amount: number, description: string, idempotencyKey?: string) =>
     simpleAction(async () => {
         await getAdminUserSession();
         const token = await getBackendToken();
-        const result = await backend.adminBilling.adjust(token, userId, amount, description);
+        const result = await backend.adminBilling.adjust(token, userId, amount, description, idempotencyKey);
         return new SuccessActionResult(result, `Balance adjusted by ¥${amount.toFixed(2)}.`);
     });
 
@@ -363,4 +363,125 @@ export const adminVoidInvoice = async (invoiceId: string) =>
         const token = await getBackendToken();
         await backend.adminBilling.voidInvoice(token, invoiceId);
         return new SuccessActionResult(undefined, 'Order voided.');
+    });
+
+// ── MQ / SMTP / Redis endpoints ────────────────────────────────────────────────
+
+const mqSchema = z.object({
+    name: z.string().min(1),
+    host: z.string().min(1),
+    port: z.number().int().positive().optional(),
+    vhost: z.string().optional(),
+    username: z.string().min(1),
+    password: z.string().optional(),
+    tls_enabled: z.boolean().optional(),
+    description: z.string().optional(),
+});
+export const createMqEndpoint = async (prevState: any, input: z.infer<typeof mqSchema>) =>
+    saveFormAction(input, mqSchema, async (data) => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminMqEndpoints.create(token, data);
+        return new SuccessActionResult(undefined, 'MQ endpoint created.');
+    });
+export const updateMqEndpoint = async (id: string, body: any) =>
+    simpleAction(async () => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminMqEndpoints.update(token, id, body);
+        return new SuccessActionResult(undefined, 'MQ endpoint updated.');
+    });
+export const deleteMqEndpoint = async (id: string) =>
+    simpleAction(async () => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminMqEndpoints.delete(token, id);
+        return new SuccessActionResult(undefined, 'MQ endpoint deleted.');
+    });
+
+const smtpSchema = z.object({
+    name: z.string().min(1),
+    host: z.string().min(1),
+    port: z.number().int().positive().optional(),
+    username: z.string().optional(),
+    password: z.string().optional(),
+    from_address: z.string().optional(),
+    tls_enabled: z.boolean().optional(),
+    description: z.string().optional(),
+});
+export const createSmtpEndpoint = async (prevState: any, input: z.infer<typeof smtpSchema>) =>
+    saveFormAction(input, smtpSchema, async (data) => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminSmtpEndpoints.create(token, data);
+        return new SuccessActionResult(undefined, 'SMTP endpoint created.');
+    });
+export const updateSmtpEndpoint = async (id: string, body: any) =>
+    simpleAction(async () => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminSmtpEndpoints.update(token, id, body);
+        return new SuccessActionResult(undefined, 'SMTP endpoint updated.');
+    });
+export const deleteSmtpEndpoint = async (id: string) =>
+    simpleAction(async () => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminSmtpEndpoints.delete(token, id);
+        return new SuccessActionResult(undefined, 'SMTP endpoint deleted.');
+    });
+
+const redisSchema = z.object({
+    name: z.string().min(1),
+    host: z.string().min(1),
+    port: z.number().int().positive().optional(),
+    password: z.string().optional(),
+    db_index: z.number().int().min(0).optional(),
+    tls_enabled: z.boolean().optional(),
+    description: z.string().optional(),
+});
+export const createRedisEndpoint = async (prevState: any, input: z.infer<typeof redisSchema>) =>
+    saveFormAction(input, redisSchema, async (data) => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminRedisEndpoints.create(token, data);
+        return new SuccessActionResult(undefined, 'Redis endpoint created.');
+    });
+export const updateRedisEndpoint = async (id: string, body: any) =>
+    simpleAction(async () => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminRedisEndpoints.update(token, id, body);
+        return new SuccessActionResult(undefined, 'Redis endpoint updated.');
+    });
+export const deleteRedisEndpoint = async (id: string) =>
+    simpleAction(async () => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminRedisEndpoints.delete(token, id);
+        return new SuccessActionResult(undefined, 'Redis endpoint deleted.');
+    });
+
+// ── App templates (admin PUBLIC) ───────────────────────────────────────────────
+
+export const createAppTemplate = async (body: any) =>
+    simpleAction(async () => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        const res = await backend.adminTemplates.create(token, body);
+        return new SuccessActionResult(res, 'Template created.');
+    });
+export const updateAppTemplate = async (id: string, body: any) =>
+    simpleAction(async () => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminTemplates.update(token, id, body);
+        return new SuccessActionResult(undefined, 'Template updated.');
+    });
+export const deleteAppTemplate = async (id: string) =>
+    simpleAction(async () => {
+        await getAdminUserSession();
+        const token = await getBackendToken();
+        await backend.adminTemplates.delete(token, id);
+        return new SuccessActionResult(undefined, 'Template deleted.');
     });

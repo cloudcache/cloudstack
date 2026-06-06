@@ -55,6 +55,9 @@ const emptyForm = {
     quota_cpu_mcores: 2000, quota_mem_mb: 2048, quota_storage_gb: 10,
     quota_bandwidth_gb: 50, quota_domain_count: 3, quota_db_instance_count: 2,
     quota_project_count: 2, quota_app_count: 5, quota_request_million: 1,
+    // P2c managed-binding quotas (0 = unlimited)
+    quota_mq_binding_count: 0, quota_smtp_binding_count: 0,
+    quota_redis_binding_count: 0, quota_s3_binding_count: 0,
     is_public: true, sort_order: 0,
 };
 
@@ -84,6 +87,10 @@ export default function AdminPlansTab({ initialItems }: { initialItems: Plan[] }
             quota_domain_count: q(plan, 'domain_count'), quota_db_instance_count: q(plan, 'db_instance_count'),
             quota_project_count: q(plan, 'project_count'), quota_app_count: q(plan, 'app_count'),
             quota_request_million: q(plan, 'request_million'),
+            quota_mq_binding_count: q(plan, 'mq_binding_count'),
+            quota_smtp_binding_count: q(plan, 'smtp_binding_count'),
+            quota_redis_binding_count: q(plan, 'redis_binding_count'),
+            quota_s3_binding_count: q(plan, 's3_binding_count'),
             is_public: plan.is_public, sort_order: plan.sort_order,
         });
         setShowForm(true);
@@ -249,7 +256,24 @@ export default function AdminPlansTab({ initialItems }: { initialItems: Plan[] }
                                     <Label className="text-xs">{t('plans.requestsMonthly')}</Label>
                                     <Input type="number" value={form.quota_request_million} onChange={e => set('quota_request_million', parseInt(e.target.value) || 0)} />
                                 </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">MQ bindings</Label>
+                                    <Input type="number" min={0} value={form.quota_mq_binding_count} onChange={e => set('quota_mq_binding_count', parseInt(e.target.value) || 0)} />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">SMTP bindings</Label>
+                                    <Input type="number" min={0} value={form.quota_smtp_binding_count} onChange={e => set('quota_smtp_binding_count', parseInt(e.target.value) || 0)} />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">Redis bindings</Label>
+                                    <Input type="number" min={0} value={form.quota_redis_binding_count} onChange={e => set('quota_redis_binding_count', parseInt(e.target.value) || 0)} />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs">S3 bindings</Label>
+                                    <Input type="number" min={0} value={form.quota_s3_binding_count} onChange={e => set('quota_s3_binding_count', parseInt(e.target.value) || 0)} />
+                                </div>
                             </div>
+                            <p className="text-xs text-muted-foreground">Set 0 for unlimited.</p>
                         </div>
                         <div className="flex items-center gap-4">
                             <div className="flex items-center gap-2">

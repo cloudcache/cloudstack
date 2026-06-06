@@ -13,6 +13,15 @@ import { createIpPool, deleteIpPool } from "./actions";
 import { Plus, Trash } from "lucide-react";
 import { useT } from "@/i18n";
 
+interface PoolBinding {
+    cluster_id: string;
+    cluster_name: string;
+    cluster_display_name?: string;
+    resource_pool_name: string;
+    resource_pool_display_name?: string;
+    node_count: number;
+}
+
 interface IpPool {
     id: string;
     name: string;
@@ -21,6 +30,9 @@ interface IpPool {
     pool_type?: string;
     description?: string;
     is_active?: boolean;
+    allocated_count?: number;
+    total_count?: number;
+    bindings?: PoolBinding[];
 }
 
 export default function AdminIpPoolsTab({ initialItems }: { initialItems: IpPool[] }) {
@@ -75,25 +87,58 @@ export default function AdminIpPoolsTab({ initialItems }: { initialItems: IpPool
                         <p className="text-muted-foreground text-sm">{t('admin.ipPools.empty')}</p>
                     ) : (
                         <div className="space-y-3">
-                            {items.map((item) => (
-                                <div key={item.id} className="flex items-center justify-between border rounded-lg p-3">
-                                    <div className="space-y-0.5">
-                                        <div className="flex items-center gap-2">
-                                            <span className="font-medium">{item.name}</span>
-                                            <span className="font-mono text-sm text-muted-foreground">{item.cidr}</span>
-                                            {item.pool_type && <Badge variant="outline">{item.pool_type}</Badge>}
-                                            <Badge variant={item.is_active !== false ? 'default' : 'secondary'}>
-                                                {item.is_active !== false ? t('plans.active') : t('plans.inactive')}
-                                            </Badge>
+                            {items.map((item) => {
+                                const totalNodes = (item.bindings ?? []).reduce((s, b) => s + (b.node_count ?? 0), 0);
+                                return (
+                                <div key={item.id} className="border rounded-lg p-3 space-y-2">
+                                    <div className="flex items-start justify-between">
+                                        <div className="space-y-0.5 min-w-0">
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                                <span className="font-medium">{item.name}</span>
+                                                <span className="font-mono text-sm text-muted-foreground">{item.cidr}</span>
+                                                {item.pool_type && <Badge variant="outline">{item.pool_type}</Badge>}
+                                                <Badge variant={item.is_active !== false ? 'default' : 'secondary'}>
+                                                    {item.is_active !== false ? t('plans.active') : t('plans.inactive')}
+                                                </Badge>
+                                                {typeof item.allocated_count === 'number' && (item.total_count ?? 0) > 0 && (
+                                                    <Badge variant="secondary">
+                                                        {item.allocated_count}/{item.total_count} IPs
+                                                    </Badge>
+                                                )}
+                                                {(item.bindings?.length ?? 0) > 0 ? (
+                                                    <Badge variant="secondary">
+                                                        {item.bindings!.length} cluster{item.bindings!.length === 1 ? '' : 's'} · {totalNodes} node{totalNodes === 1 ? '' : 's'}
+                                                    </Badge>
+                                                ) : (
+                                                    <Badge variant="outline" className="text-amber-600">unbound</Badge>
+                                                )}
+                                            </div>
+                                            {item.gateway && <div className="text-sm text-muted-foreground">{t('admin.ipPools.gateway')}: {item.gateway}</div>}
+                                            {item.description && <div className="text-xs text-muted-foreground">{item.description}</div>}
                                         </div>
-                                        {item.gateway && <div className="text-sm text-muted-foreground">{t('admin.ipPools.gateway')}: {item.gateway}</div>}
-                                        {item.description && <div className="text-xs text-muted-foreground">{item.description}</div>}
+                                        <Button size="sm" variant="ghost" onClick={() => handleDelete(item)}>
+                                            <Trash className="h-4 w-4 text-destructive" />
+                                        </Button>
                                     </div>
-                                    <Button size="sm" variant="ghost" onClick={() => handleDelete(item)}>
-                                        <Trash className="h-4 w-4 text-destructive" />
-                                    </Button>
+                                    {(item.bindings?.length ?? 0) > 0 && (
+                                        <div className="ml-1 pl-3 border-l-2 border-muted space-y-1">
+                                            {item.bindings!.map(b => (
+                                                <div key={b.cluster_id} className="text-xs flex items-center gap-2 flex-wrap">
+                                                    <span className="text-muted-foreground">→</span>
+                                                    <Badge variant="outline" className="font-mono">
+                                                        {b.resource_pool_display_name ?? b.resource_pool_name}
+                                                    </Badge>
+                                                    <span className="text-muted-foreground">/</span>
+                                                    <span className="font-medium">{b.cluster_display_name ?? b.cluster_name}</span>
+                                                    <span className="text-muted-foreground">·</span>
+                                                    <span className="text-muted-foreground">{b.node_count} node{b.node_count === 1 ? '' : 's'}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
                 </CardContent>

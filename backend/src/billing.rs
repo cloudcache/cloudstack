@@ -353,6 +353,15 @@ pub async fn apply_overdue_charges(state: &AppState) -> AppResult<u32> {
     .fetch_all(&state.db)
     .await?;
 
+    // Fetched once: used to notify each charged user (non-fatal).
+    let currency = billing_currency(state).await;
+    let platform_name: String = sqlx::query_scalar(
+        "SELECT `value` FROM platform_config WHERE `key` = 'platform_display_name'",
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .unwrap_or_else(|| "QuickStack".to_string());
+
     let mut applied = 0u32;
     for u in users {
         let balance = u.balance;
@@ -414,6 +423,25 @@ pub async fn apply_overdue_charges(state: &AppState) -> AppResult<u32> {
 
         applied += 1;
         tracing::warn!(user_id = %u.user_id, balance, fee_amount, "overdue charge applied");
+
+        // Notify the user (non-fatal) so they can top up before apps are suspended.
+        let contact: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT email, display_name FROM users WHERE id = ?")
+                .bind(&u.user_id)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None);
+        if let Some((email, display_name)) = contact {
+            if !email.is_empty() {
+                let name = display_name.unwrap_or_else(|| email.clone());
+                let _ = state
+                    .mailer
+                    .send_overdue_notice(
+                        &email, &name, fee_amount, new_balance, &currency, &platform_name,
+                    )
+                    .await;
+            }
+        }
     }
 
     Ok(applied)
@@ -542,4 +570,276 @@ pub async fn run_billing_tasks(state: &AppState) {
     if let Err(e) = apply_overdue_charges(state).await {
         tracing::warn!("overdue charge error: {e}");
     }
+
+    // Subscription renewals — wallet debit + cycle bump or transition to OVERDUE/EXPIRED.
+    // Idempotent: only acts on subs with expires_at <= NOW(), and pushes expires_at on
+    // every successful pass so the next call sees an empty due-list.
+    if let Err(e) = apply_subscription_renewals(state).await {
+        tracing::warn!("subscription renewal error: {e}");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P0.1 + P0.4 — Subscription renewal cron
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Runs every 30 minutes from the billing loop. Handles:
+//   - ACTIVE subs whose expires_at has passed:
+//       * auto_renew=1 + price==0  → push expires_at, status stays ACTIVE
+//       * auto_renew=1 + balance OK → debit wallet, push expires_at
+//       * auto_renew=1 + balance low → status=OVERDUE, log INSUFFICIENT_FUNDS
+//       * auto_renew=0              → status=EXPIRED, reset project quotas
+//
+// Each attempt is logged to `subscription_renewals` so admins can audit.
+
+/// Apply all due renewals. Idempotent (idempotency comes from comparing
+/// expires_at <= NOW() and tightening it on every successful pass).
+pub async fn apply_subscription_renewals(state: &AppState) -> AppResult<()> {
+    let due: Vec<SubRow> = sqlx::query_as(
+        "SELECT s.id, s.user_id, s.plan_id, s.billing_cycle, s.auto_renew, \
+                s.expires_at, \
+                p.price_monthly, p.price_annually \
+         FROM user_subscriptions s \
+         JOIN subscription_plans p ON p.id = s.plan_id \
+         WHERE s.status = 'ACTIVE' \
+           AND s.expires_at IS NOT NULL \
+           AND s.expires_at <= NOW()",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    if due.is_empty() {
+        return Ok(());
+    }
+
+    for sub in due {
+        if let Err(e) = renew_one(state, &sub).await {
+            tracing::warn!(subscription_id = %sub.id, "renewal error: {e}");
+            let _ = log_renewal(
+                state, &sub, "ERROR",
+                rust_decimal::Decimal::ZERO,
+                None, None, None,
+                Some(&e.to_string()),
+            ).await;
+        }
+    }
+    Ok(())
+}
+
+async fn renew_one(state: &AppState, sub: &impl SubLike) -> AppResult<()> {
+    use rust_decimal::Decimal;
+    use rust_decimal::prelude::ToPrimitive;
+
+    let cycle = sub.billing_cycle();
+    let now_naive = chrono::Utc::now().naive_utc();
+    let base = sub.expires_at().unwrap_or(now_naive);
+
+    // ── auto_renew = false → EXPIRED ─────────────────────────────────────────
+    if sub.auto_renew() == 0 {
+        return mark_expired(state, sub).await;
+    }
+
+    // ── auto_renew = true → renewal price + cycle bump ──────────────────────
+    let price = match cycle {
+        "ANNUALLY" => sub.price_annually().unwrap_or(sub.price_monthly() * Decimal::from(12)),
+        "LIFETIME" => Decimal::ZERO, // lifetime subs shouldn't have expires_at, but guard anyway
+        _ => sub.price_monthly(),
+    };
+    let new_expires = match cycle {
+        "ANNUALLY" => base + chrono::Duration::days(365),
+        "LIFETIME" => base + chrono::Duration::days(36500),
+        _ => base + chrono::Duration::days(30),
+    };
+
+    if price.is_zero() {
+        sqlx::query("UPDATE user_subscriptions SET expires_at = ? WHERE id = ?")
+            .bind(new_expires).bind(sub.id())
+            .execute(&state.db).await?;
+        let _ = log_renewal(
+            state, sub, "RENEWED_FREE", Decimal::ZERO,
+            None, None, Some(new_expires), None,
+        ).await;
+        return Ok(());
+    }
+
+    // ── Paid renewal: check wallet balance, then deduct atomically ─────────
+    let mut tx = state.db.begin().await?;
+    let balance: Option<f64> = sqlx::query_scalar(
+        "SELECT CAST(balance AS DOUBLE) FROM user_wallets WHERE user_id = ?",
+    )
+    .bind(sub.user_id())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let balance = balance.unwrap_or(0.0);
+    let price_f = price.to_f64().unwrap_or(0.0);
+
+    if balance < price_f {
+        // Insufficient — mark OVERDUE, do not push expires_at
+        sqlx::query(
+            "UPDATE user_subscriptions SET status = 'OVERDUE' WHERE id = ? AND status = 'ACTIVE'",
+        )
+        .bind(sub.id())
+        .execute(&mut *tx).await?;
+        tx.commit().await?;
+        let _ = log_renewal(
+            state, sub, "INSUFFICIENT_FUNDS", price,
+            Some(Decimal::try_from(balance).unwrap_or(Decimal::ZERO)),
+            Some(Decimal::try_from(balance).unwrap_or(Decimal::ZERO)),
+            None,
+            Some(&format!("balance {balance} < price {price_f}")),
+        ).await;
+        tracing::info!(
+            subscription_id = %sub.id(),
+            balance, price_f,
+            "subscription overdue — insufficient funds"
+        );
+        return Ok(());
+    }
+
+    // Sufficient — debit + bump expires_at + log transaction
+    let currency = billing_currency(state).await;
+    sqlx::query(
+        "INSERT INTO user_wallets (user_id, balance, currency) \
+         VALUES (?, -?, ?) \
+         ON DUPLICATE KEY UPDATE balance = balance - ?",
+    )
+    .bind(sub.user_id()).bind(price_f).bind(&currency).bind(price_f)
+    .execute(&mut *tx).await?;
+
+    let new_balance: f64 = sqlx::query_scalar(
+        "SELECT CAST(balance AS DOUBLE) FROM user_wallets WHERE user_id = ?",
+    )
+    .bind(sub.user_id())
+    .fetch_one(&mut *tx).await?;
+
+    let tx_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO wallet_transactions \
+            (id, user_id, tx_type, amount, balance_after, description, ref_id) \
+         VALUES (?, ?, 'DEDUCTION', ?, ?, ?, ?)",
+    )
+    .bind(&tx_id).bind(sub.user_id())
+    .bind(-price_f).bind(new_balance)
+    .bind(format!("Subscription renewal ({cycle})"))
+    .bind(sub.id())
+    .execute(&mut *tx).await?;
+
+    sqlx::query(
+        "UPDATE user_subscriptions SET expires_at = ?, status = 'ACTIVE' WHERE id = ?",
+    )
+    .bind(new_expires).bind(sub.id())
+    .execute(&mut *tx).await?;
+    tx.commit().await?;
+
+    let _ = log_renewal(
+        state, sub, "CHARGED", price,
+        Some(Decimal::try_from(balance).unwrap_or(Decimal::ZERO)),
+        Some(Decimal::try_from(new_balance).unwrap_or(Decimal::ZERO)),
+        Some(new_expires),
+        None,
+    ).await;
+    tracing::info!(
+        subscription_id = %sub.id(),
+        amount = price_f, new_balance,
+        "subscription renewed"
+    );
+    Ok(())
+}
+
+async fn mark_expired(state: &AppState, sub: &impl SubLike) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE user_subscriptions SET status = 'EXPIRED' WHERE id = ? AND status = 'ACTIVE'",
+    )
+    .bind(sub.id())
+    .execute(&state.db).await?;
+
+    // Reset all project quotas owned by this user — quota enforcer will then
+    // scale down apps that exceed the zeroed limits on its next pass.
+    sqlx::query(
+        "UPDATE projects SET \
+            quota_cpu_mcores = 0, quota_mem_mb = 0, quota_storage_gb = 0, \
+            quota_bandwidth_gb = 0, quota_domain_count = 0, \
+            quota_db_instances = 0, quota_apps = 0, quota_request_million = 0, \
+            quota_mq_bindings = 0, quota_smtp_bindings = 0, \
+            quota_redis_bindings = 0, quota_s3_bindings = 0 \
+         WHERE owner_id = ?",
+    )
+    .bind(sub.user_id())
+    .execute(&state.db).await?;
+
+    let _ = log_renewal(state, sub, "EXPIRED", rust_decimal::Decimal::ZERO, None, None, None, None).await;
+    tracing::info!(subscription_id = %sub.id(), "subscription expired (auto_renew off)");
+    Ok(())
+}
+
+async fn log_renewal(
+    state: &AppState,
+    sub: &impl SubLike,
+    status: &str,
+    amount: rust_decimal::Decimal,
+    balance_before: Option<rust_decimal::Decimal>,
+    balance_after: Option<rust_decimal::Decimal>,
+    new_expires_at: Option<chrono::NaiveDateTime>,
+    error_message: Option<&str>,
+) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO subscription_renewals \
+            (id, subscription_id, user_id, plan_id, billing_cycle, \
+             amount, status, balance_before, balance_after, \
+             previous_expires_at, new_expires_at, error_message) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(sub.id())
+    .bind(sub.user_id())
+    .bind(sub.plan_id())
+    .bind(sub.billing_cycle())
+    .bind(amount)
+    .bind(status)
+    .bind(balance_before)
+    .bind(balance_after)
+    .bind(sub.expires_at())
+    .bind(new_expires_at)
+    .bind(error_message)
+    .execute(&state.db).await?;
+    Ok(())
+}
+
+/// Tiny trait so renew_one/mark_expired can be called with the local Sub
+/// struct without exposing it publicly. Avoids re-deriving FromRow on a
+/// public type.
+trait SubLike {
+    fn id(&self) -> &str;
+    fn user_id(&self) -> &str;
+    fn plan_id(&self) -> &str;
+    fn billing_cycle(&self) -> &str;
+    fn auto_renew(&self) -> i8;
+    fn expires_at(&self) -> Option<chrono::NaiveDateTime>;
+    fn price_monthly(&self) -> rust_decimal::Decimal;
+    fn price_annually(&self) -> Option<rust_decimal::Decimal>;
+}
+
+// Manual impl for the inline `Sub` struct above (using nested-scope trick via
+// a free-standing impl block at module scope).
+impl SubLike for SubRow {
+    fn id(&self) -> &str { &self.id }
+    fn user_id(&self) -> &str { &self.user_id }
+    fn plan_id(&self) -> &str { &self.plan_id }
+    fn billing_cycle(&self) -> &str { &self.billing_cycle }
+    fn auto_renew(&self) -> i8 { self.auto_renew }
+    fn expires_at(&self) -> Option<chrono::NaiveDateTime> { self.expires_at }
+    fn price_monthly(&self) -> rust_decimal::Decimal { self.price_monthly }
+    fn price_annually(&self) -> Option<rust_decimal::Decimal> { self.price_annually }
+}
+
+#[derive(sqlx::FromRow)]
+struct SubRow {
+    id: String,
+    user_id: String,
+    plan_id: String,
+    billing_cycle: String,
+    auto_renew: i8,
+    expires_at: Option<chrono::NaiveDateTime>,
+    price_monthly: rust_decimal::Decimal,
+    price_annually: Option<rust_decimal::Decimal>,
 }

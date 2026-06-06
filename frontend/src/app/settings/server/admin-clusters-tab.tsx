@@ -29,6 +29,12 @@ interface IpPoolRef {
     gateway?: string;
 }
 
+interface IpPoolSnapshot {
+    name?: string;
+    cidr?: string;
+    gateway?: string;
+}
+
 interface Cluster {
     id: string;
     name: string;
@@ -38,6 +44,7 @@ interface Cluster {
     orchestrator?: 'K3S' | 'DOCKER';
     pool?: PoolRef;
     ip_pool_id?: string;
+    ip_pool?: IpPoolSnapshot;
     node_main_iface?: string;
     node_count?: number;
     ready_count?: number;
@@ -164,6 +171,14 @@ export default function AdminClustersTab({ initialItems, clusterStorage, pools, 
                                                 <Badge variant="secondary">
                                                     {t('admin.clusters.pool')}: {item.pool.display_name ?? item.pool.name}
                                                 </Badge>
+                                            )}
+                                            {item.ip_pool ? (
+                                                <Badge variant="secondary" className="font-mono">
+                                                    IP: {item.ip_pool.name} · {item.ip_pool.cidr}
+                                                    {item.ip_pool.gateway ? ` gw ${item.ip_pool.gateway}` : ''}
+                                                </Badge>
+                                            ) : (
+                                                <Badge variant="outline" className="text-amber-600">no IP pool</Badge>
                                             )}
                                             {typeof item.node_count === 'number' && (
                                                 <span className="text-xs text-muted-foreground">

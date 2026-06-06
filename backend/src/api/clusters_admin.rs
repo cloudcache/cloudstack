@@ -28,6 +28,10 @@ pub async fn list(
         created_at: chrono::NaiveDateTime,
         orchestrator: String,
         ip_pool_id: Option<String>, node_main_iface: String,
+        // IP pool context joined from ip_pools
+        ip_pool_name: Option<String>,
+        ip_pool_cidr: Option<String>,
+        ip_pool_gateway: Option<String>,
         pool_id: String, pool_name: String, pool_display_name: Option<String>,
         node_count: i64,
         ready_count: Option<i64>,
@@ -35,11 +39,13 @@ pub async fn list(
     let rows: Vec<ListRow> = sqlx::query_as(
         "SELECT c.id, c.name, c.display_name, c.description, c.is_active, c.created_at, \
                 c.orchestrator, c.ip_pool_id, c.node_main_iface, \
+                ip.name AS ip_pool_name, ip.cidr AS ip_pool_cidr, ip.gateway AS ip_pool_gateway, \
                 p.id AS pool_id, p.name AS pool_name, p.display_name AS pool_display_name, \
                 COUNT(n.id) AS node_count, \
                 CAST(SUM(CASE WHEN n.node_status = 'READY' THEN 1 ELSE 0 END) AS SIGNED) AS ready_count \
          FROM clusters c \
          JOIN resource_pools p ON p.id = c.pool_id \
+         LEFT JOIN ip_pools ip ON ip.id = c.ip_pool_id \
          LEFT JOIN cluster_nodes n ON n.cluster_id = c.id \
          GROUP BY c.id ORDER BY p.name, c.name",
     )
@@ -56,6 +62,11 @@ pub async fn list(
             "is_active": r.is_active != 0,
             "orchestrator": r.orchestrator,
             "ip_pool_id": r.ip_pool_id,
+            "ip_pool": r.ip_pool_id.as_ref().map(|_| serde_json::json!({
+                "name":    r.ip_pool_name,
+                "cidr":    r.ip_pool_cidr,
+                "gateway": r.ip_pool_gateway,
+            })),
             "node_main_iface": r.node_main_iface,
             "pool": { "id": r.pool_id, "name": r.pool_name, "display_name": r.pool_display_name },
             "node_count": r.node_count,

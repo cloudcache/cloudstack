@@ -261,8 +261,34 @@ async fn handle_checkout_completed(state: &AppState, session: &CheckoutSession) 
     // Convert smallest-unit amount to decimal (e.g. 1000分 → 10.00)
     let decimal_amount = rust_decimal::Decimal::new(payment.amount, 2);
 
-    // Atomic: wallet credit + transaction log + payment record update
+    // Atomic: claim payment, then wallet credit + transaction log.
     let mut db_tx = state.db.begin().await?;
+
+    // Atomically claim this payment. Stripe delivers webhooks at-least-once, so
+    // two concurrent deliveries can both pass the PENDING check above before
+    // either commits. The conditional UPDATE flips PENDING→COMPLETED under a row
+    // lock; only the winning delivery affects a row and proceeds to credit the
+    // wallet — the loser matches 0 rows and bails, preventing a double credit.
+    let tx_id = Uuid::new_v4().to_string();
+    let claimed = sqlx::query(
+        r#"UPDATE stripe_payments
+           SET status = 'COMPLETED',
+               stripe_payment_intent = ?,
+               wallet_tx_id = ?,
+               completed_at = NOW()
+           WHERE id = ? AND status = 'PENDING'"#,
+    )
+    .bind(&payment_intent)
+    .bind(&tx_id)
+    .bind(&payment.id)
+    .execute(&mut *db_tx)
+    .await?;
+
+    if claimed.rows_affected() == 0 {
+        db_tx.rollback().await?;
+        tracing::debug!(session_id, "stripe webhook: payment already claimed by a concurrent delivery");
+        return Ok(());
+    }
 
     // Credit wallet
     sqlx::query!(
@@ -281,8 +307,7 @@ async fn handle_checkout_completed(state: &AppState, session: &CheckoutSession) 
     .fetch_one(&mut *db_tx)
     .await?;
 
-    // Record wallet transaction
-    let tx_id = Uuid::new_v4().to_string();
+    // Record wallet transaction (id matches the wallet_tx_id claimed above)
     sqlx::query!(
         r#"INSERT INTO wallet_transactions
              (id, user_id, tx_type, amount, balance_after, description, ref_id)
@@ -291,21 +316,6 @@ async fn handle_checkout_completed(state: &AppState, session: &CheckoutSession) 
         payment.user_id,
         decimal_amount,
         new_balance,
-        payment.id,
-    )
-    .execute(&mut *db_tx)
-    .await?;
-
-    // Update payment record
-    sqlx::query!(
-        r#"UPDATE stripe_payments
-           SET status = 'COMPLETED',
-               stripe_payment_intent = ?,
-               wallet_tx_id = ?,
-               completed_at = NOW()
-           WHERE id = ?"#,
-        payment_intent,
-        tx_id,
         payment.id,
     )
     .execute(&mut *db_tx)

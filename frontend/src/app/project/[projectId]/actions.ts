@@ -50,15 +50,26 @@ export const createAppFromTemplate = async (
 // Pre-load resources the deploy dialog needs: list of database_instances
 // (existing managed DBs the project can bind to), database_clusters (for
 // provision-new), and s3_targets.
+// Fetch managed-resource usage for a project (used by ManagedUsagePanel).
+// Done as a server action so the bearer token never leaves the server.
+export const fetchManagedUsage = async (projectId: string) => {
+    await getAuthUserSession();
+    const token = await getBackendToken();
+    return backend.apps.managedUsage(token, projectId);
+};
+
 export const loadBindingChoices = async (projectId: string) => {
     await getAuthUserSession();
     const token = await getBackendToken();
-    const [databases, dbClusters, s3Targets] = await Promise.all([
+    const [databases, dbClusters, s3Targets, mqEndpoints, smtpEndpoints, redisEndpoints] = await Promise.all([
         backend.databases.list(token, projectId).catch(() => []),
         backend.databases.listClusters(token).catch(() => []),
         backend.s3Targets.list(token).catch(() => []),
+        backend.mqEndpoints.list(token).catch(() => []),
+        backend.smtpEndpoints.list(token).catch(() => []),
+        backend.redisEndpoints.list(token).catch(() => []),
     ]);
-    return { databases, dbClusters, s3Targets };
+    return { databases, dbClusters, s3Targets, mqEndpoints, smtpEndpoints, redisEndpoints };
 };
 
 export const deleteApp = async (projectId: string, appId: string) =>

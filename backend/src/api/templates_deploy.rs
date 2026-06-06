@@ -68,24 +68,46 @@ pub struct BindingRequest {
 }
 
 // ── Template requirement shape (mirrors the JSON stored in app_templates.requirements) ──
+//
+// Semantics: declaring a requirement is optional, but once declared it is
+// MANDATORY at deploy time. The `required` field is no longer honoured and
+// `skip` is not a valid binding mode.
 
 #[derive(Deserialize, Clone)]
 struct Requirement {
     key: String,
-    kind: String,    // "database" | "objstore" | "cache"
+    kind: String,    // "database" | "objstore" | "cache" | "mq" | "smtp"
     #[serde(default)]
-    engine: String,  // "mysql" / "postgres" / "mariadb" / "redis" / "s3"
+    engine: String,  // "mysql" / "postgres" / "rabbitmq" / "s3" / …
     #[serde(default)]
-    required: bool,
+    label: Option<String>,
+    /// env-var injection: { logical -> ENV_KEY }
     #[serde(default)]
     env_mapping: serde_json::Map<String, serde_json::Value>,
+    /// File-mount injection: each entry is rendered with minijinja using the
+    /// resolved attributes (host, port, password, ...) and written to
+    /// app_file_mounts.
+    #[serde(default)]
+    config_files: Vec<ConfigFileSpec>,
+}
+
+#[derive(Deserialize, Clone)]
+struct ConfigFileSpec {
+    /// Absolute path inside the container (e.g. "/etc/app/db.yml")
+    path: String,
+    /// minijinja template; placeholders use {{ host }}, {{ port }}, …
+    template: String,
 }
 
 struct ResolvedBinding {
-    kind: String,        // 'database_instance' | 's3_target' (for the bindings table)
+    /// Value persisted in app_template_bindings.binding_kind.
+    /// One of: database_instance | s3_target | mq_endpoint | smtp_endpoint | redis_endpoint
+    kind: String,
     ref_id: String,
     provisioned: bool,
-    env_vars: Vec<(String, String)>, // (key_name, value) to insert into app_env_vars
+    /// Logical attribute map used to render env_mapping AND config_files.
+    /// Keys are kind-specific logical names (host, port, password, ...).
+    attributes: std::collections::BTreeMap<String, String>,
     is_secret: bool,
 }
 
@@ -130,18 +152,19 @@ pub async fn deploy_from_template(
         })?;
 
     // ── Validate bindings ──────────────────────────────────────────────────
+    // Every declared requirement MUST have a binding (no skip mode).
     for req in &requirements {
         let provided = body.bindings.iter().find(|b| b.requirement_key == req.key);
-        match (req.required, provided) {
-            (true, None) => {
+        match provided {
+            None => {
                 return Err(AppError::BadRequest(format!(
-                    "binding required for '{}'",
+                    "binding required for declared requirement '{}'",
                     req.key
                 )))
             }
-            (true, Some(b)) if b.mode == "skip" => {
+            Some(b) if b.mode == "skip" => {
                 return Err(AppError::BadRequest(format!(
-                    "requirement '{}' is required and cannot be skipped",
+                    "declared requirement '{}' cannot be skipped",
                     req.key
                 )))
             }
@@ -149,8 +172,53 @@ pub async fn deploy_from_template(
         }
     }
 
+    // ── Pre-check binding quotas (P2c) ─────────────────────────────────────
+    // For each incoming binding, compute the "extra distinct refs" this deploy
+    // would add to the project's usage, then have managed_usage validate it
+    // against per-kind project quotas.
+    {
+        use std::collections::HashMap;
+        let mut delta: HashMap<String, i64> = HashMap::new();
+        for (req, binding) in requirements.iter().filter_map(|r| {
+            body.bindings.iter().find(|b| b.requirement_key == r.key).map(|b| (r, b))
+        }) {
+            let kind = match req.kind.as_str() {
+                "database" => "database_instance",
+                "cache"    => "redis_endpoint",
+                "objstore" => "s3_target",
+                "mq"       => "mq_endpoint",
+                "smtp"     => "smtp_endpoint",
+                _ => continue,
+            };
+            // mode=provision is always new. mode=managed only counts if the
+            // project isn't already bound to that ref via another app.
+            let counts_as_new = if binding.mode == "provision" {
+                true
+            } else if let Some(ref_id) = binding.managed_ref_id.as_deref() {
+                let existing: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM app_template_bindings b \
+                     JOIN apps a ON a.id = b.app_id \
+                     WHERE a.project_id = ? AND b.binding_kind = ? AND b.binding_ref_id = ?",
+                )
+                .bind(&project_id)
+                .bind(kind)
+                .bind(ref_id)
+                .fetch_one(&state.db)
+                .await?;
+                existing == 0
+            } else {
+                false
+            };
+            if counts_as_new {
+                *delta.entry(kind.to_string()).or_insert(0) += 1;
+            }
+        }
+        super::managed_usage::check_binding_allowed(&state, &project_id, &delta).await?;
+    }
+
     // ── Resolve bindings (one per provided binding) ────────────────────────
     let mut env_vars_from_bindings: Vec<(String, String, bool)> = Vec::new();
+    let mut file_mounts_from_bindings: Vec<(String, String)> = Vec::new(); // (path, rendered_content)
     let mut binding_records: Vec<ResolvedBinding> = Vec::new();
     let mut binding_requirement_keys: Vec<String> = Vec::new();
 
@@ -158,13 +226,25 @@ pub async fn deploy_from_template(
         let Some(binding) = body.bindings.iter().find(|b| b.requirement_key == req.key) else {
             continue;
         };
-        if binding.mode == "skip" {
-            continue;
-        }
         let resolved = resolve_binding(&state, &project_id, &auth, req, binding).await?;
-        for (k, v) in &resolved.env_vars {
-            env_vars_from_bindings.push((k.clone(), v.clone(), resolved.is_secret));
+
+        // Env-var injection
+        for (logical, target) in &req.env_mapping {
+            let Some(target_key) = target.as_str() else { continue };
+            if let Some(value) = resolved.attributes.get(logical) {
+                env_vars_from_bindings.push((target_key.to_string(), value.clone(), resolved.is_secret));
+            }
         }
+
+        // Config-file injection: render each spec with minijinja
+        for cf in &req.config_files {
+            let rendered = render_config_file(&cf.template, &resolved.attributes)
+                .map_err(|e| AppError::BadRequest(format!(
+                    "config file render failed for requirement '{}': {e}", req.key
+                )))?;
+            file_mounts_from_bindings.push((cf.path.clone(), rendered));
+        }
+
         binding_requirement_keys.push(req.key.clone());
         binding_records.push(resolved);
     }
@@ -212,7 +292,7 @@ pub async fn deploy_from_template(
     sqlx::query(
         "INSERT INTO apps \
             (id, project_id, pool_id, name, display_name, owner_id, source_type, \
-             container_image, replicas, \
+             container_image, image_registry_id, replicas, \
              webhook_id, app_type, use_network_policy, \
              ingress_network_policy, egress_network_policy, \
              health_check_type, health_check_scheme, health_check_period, \
@@ -222,7 +302,7 @@ pub async fn deploy_from_template(
              mount_ldap_files, mount_etc_hosts, mount_user_home, \
              mount_app_data, mount_app_logs) \
          VALUES (?, ?, ?, ?, ?, ?, ?, \
-                 ?, ?, \
+                 ?, ?, ?, \
                  ?, ?, ?, \
                  ?, ?, \
                  'NONE', 'HTTP', ?, ?, ?, \
@@ -238,6 +318,9 @@ pub async fn deploy_from_template(
     .bind(&auth.user_id)
     .bind(&source_type)
     .bind(&image_ref)
+    // P0.3 — propagate template's registry FK so the k8s deployer can
+    // synthesize an imagePullSecret from image_registries.{username,password}.
+    .bind(&tpl.image_registry_id)
     .bind(replicas)
     .bind(&webhook_id)
     .bind(&app_type)
@@ -321,6 +404,22 @@ pub async fn deploy_from_template(
         .await?;
     }
 
+    // ── Config-file injection (rendered via minijinja from binding attrs) ──
+    for (path, content) in file_mounts_from_bindings {
+        let (mount_path, filename) = split_path(&path);
+        sqlx::query(
+            "INSERT INTO app_file_mounts (id, app_id, mount_path, filename, content) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&app_id)
+        .bind(&mount_path)
+        .bind(&filename)
+        .bind(&content)
+        .execute(&state.db)
+        .await?;
+    }
+
     // ── Record bindings so delete can cascade-clean managed resources ──────
     for (rkey, rec) in binding_requirement_keys.iter().zip(binding_records.iter()) {
         sqlx::query(
@@ -353,31 +452,40 @@ async fn resolve_binding(
     req: &Requirement,
     binding: &BindingRequest,
 ) -> AppResult<ResolvedBinding> {
+    let managed_id = || {
+        binding.managed_ref_id.as_deref()
+            .ok_or_else(|| AppError::BadRequest("managed_ref_id required".into()))
+    };
     match (req.kind.as_str(), binding.mode.as_str()) {
-        ("database" | "cache", "managed") => {
-            let ref_id = binding
-                .managed_ref_id
-                .as_deref()
-                .ok_or_else(|| AppError::BadRequest("managed_ref_id required".into()))?;
-            resolve_existing_database(state, project_id, ref_id, &req.env_mapping).await
+        // ── Database (MySQL/Postgres/MongoDB) — managed or provision ──
+        ("database", "managed") => {
+            resolve_existing_database(state, project_id, managed_id()?).await
         }
-        ("database" | "cache", "provision") => {
-            let cluster_id = binding
-                .provision_cluster_id
-                .as_deref()
+        ("database", "provision") => {
+            let cluster_id = binding.provision_cluster_id.as_deref()
                 .ok_or_else(|| AppError::BadRequest("provision_cluster_id required".into()))?;
             let hint = binding.provision_name_hint.as_deref().unwrap_or(&req.key);
-            provision_new_database(state, project_id, auth, cluster_id, hint, &req.env_mapping).await
+            provision_new_database(state, project_id, auth, cluster_id, hint).await
         }
-        ("objstore", "managed") => {
-            let ref_id = binding
-                .managed_ref_id
-                .as_deref()
-                .ok_or_else(|| AppError::BadRequest("managed_ref_id required".into()))?;
-            resolve_existing_s3(state, ref_id, &req.env_mapping).await
-        }
+        // ── Cache (Redis) — managed only; provision unsupported in P2 ──
+        ("cache", "managed") => resolve_existing_redis(state, managed_id()?).await,
+        ("cache", "provision") => Err(AppError::BadRequest(
+            "Redis provisioning is not supported — register a redis_endpoint and use mode=managed".into(),
+        )),
+        // ── Object storage (S3) — managed only ──
+        ("objstore", "managed") => resolve_existing_s3(state, managed_id()?).await,
         ("objstore", "provision") => Err(AppError::BadRequest(
-            "S3 provisioning is not supported in P2a — use mode=managed and pick an existing target".into(),
+            "S3 provisioning is not supported — pick an existing target".into(),
+        )),
+        // ── Message queue ──
+        ("mq", "managed") => resolve_existing_mq(state, managed_id()?).await,
+        ("mq", "provision") => Err(AppError::BadRequest(
+            "MQ provisioning is not supported — register an mq_endpoint and use mode=managed".into(),
+        )),
+        // ── SMTP relay ──
+        ("smtp", "managed") => resolve_existing_smtp(state, managed_id()?).await,
+        ("smtp", "provision") => Err(AppError::BadRequest(
+            "SMTP provisioning is not supported — register an smtp_endpoint and use mode=managed".into(),
         )),
         (k, m) => Err(AppError::BadRequest(format!(
             "unsupported binding: kind={k} mode={m}"
@@ -389,7 +497,6 @@ async fn resolve_existing_database(
     state: &AppState,
     project_id: &str,
     instance_id: &str,
-    env_mapping: &serde_json::Map<String, serde_json::Value>,
 ) -> AppResult<ResolvedBinding> {
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -412,20 +519,12 @@ async fn resolve_existing_database(
     .ok_or_else(|| AppError::NotFound(format!("database_instance {instance_id}")))?;
 
     let password = state.crypto.decrypt(&row.db_password)?;
-    let env_vars = map_db_env_vars(
-        env_mapping,
-        &row.host,
-        row.port as u16,
-        &row.db_name,
-        &row.db_user,
-        &password,
-    );
 
     Ok(ResolvedBinding {
         kind: "database_instance".into(),
         ref_id: instance_id.to_string(),
         provisioned: false,
-        env_vars,
+        attributes: db_attrs(&row.host, row.port as u16, &row.db_name, &row.db_user, &password),
         is_secret: true,
     })
 }
@@ -436,7 +535,6 @@ async fn provision_new_database(
     auth: &AuthUser,
     cluster_id: &str,
     name_hint: &str,
-    env_mapping: &serde_json::Map<String, serde_json::Value>,
 ) -> AppResult<ResolvedBinding> {
     // Sanitize name_hint to MySQL-safe identifier chars
     let clean: String = name_hint
@@ -514,20 +612,14 @@ async fn provision_new_database(
     .execute(&state.db)
     .await?;
 
-    let env_vars = map_db_env_vars(
-        env_mapping,
-        &cluster.host,
-        cluster.port as u16,
-        &db_name,
-        &db_user,
-        &db_password,
-    );
-
     Ok(ResolvedBinding {
         kind: "database_instance".into(),
         ref_id: instance_id,
         provisioned: true,
-        env_vars,
+        attributes: db_attrs(
+            &cluster.host, cluster.port as u16,
+            &db_name, &db_user, &db_password,
+        ),
         is_secret: true,
     })
 }
@@ -535,7 +627,6 @@ async fn provision_new_database(
 async fn resolve_existing_s3(
     state: &AppState,
     target_id: &str,
-    env_mapping: &serde_json::Map<String, serde_json::Value>,
 ) -> AppResult<ResolvedBinding> {
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -555,25 +646,138 @@ async fn resolve_existing_s3(
     .ok_or_else(|| AppError::NotFound(format!("s3_target {target_id}")))?;
 
     let secret = state.crypto.decrypt(&row.secret_key)?;
-    let mut env_vars = Vec::new();
-    for (logical, target) in env_mapping {
-        let Some(target_key) = target.as_str() else { continue };
-        let value = match logical.as_str() {
-            "endpoint" => row.endpoint.clone(),
-            "region" => row.region.clone().unwrap_or_default(),
-            "bucket" => row.bucket_name.clone(),
-            "access_key" => row.access_key_id.clone(),
-            "secret_key" => secret.clone(),
-            _ => continue,
-        };
-        env_vars.push((target_key.to_string(), value));
-    }
+    let mut attrs = std::collections::BTreeMap::new();
+    attrs.insert("endpoint".into(), row.endpoint);
+    attrs.insert("region".into(), row.region.unwrap_or_default());
+    attrs.insert("bucket".into(), row.bucket_name);
+    attrs.insert("access_key".into(), row.access_key_id);
+    attrs.insert("secret_key".into(), secret);
 
     Ok(ResolvedBinding {
         kind: "s3_target".into(),
         ref_id: target_id.to_string(),
         provisioned: false,
-        env_vars,
+        attributes: attrs,
+        is_secret: true,
+    })
+}
+
+async fn resolve_existing_mq(state: &AppState, id: &str) -> AppResult<ResolvedBinding> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        host: String, port: u16, vhost: String,
+        username: String, password: String, tls_enabled: i8,
+    }
+    let row: Row = sqlx::query_as(
+        "SELECT host, port, vhost, username, password, tls_enabled \
+         FROM mq_endpoints WHERE id = ? AND is_active = 1",
+    )
+    .bind(id).fetch_optional(&state.db).await?
+    .ok_or_else(|| AppError::NotFound(format!("mq_endpoint {id}")))?;
+
+    let password = state.crypto.decrypt(&row.password)?;
+    let scheme = if row.tls_enabled != 0 { "amqps" } else { "amqp" };
+    let mut attrs = std::collections::BTreeMap::new();
+    attrs.insert("host".into(), row.host.clone());
+    attrs.insert("port".into(), row.port.to_string());
+    attrs.insert("vhost".into(), row.vhost.clone());
+    attrs.insert("user".into(), row.username.clone());
+    attrs.insert("username".into(), row.username.clone());
+    attrs.insert("password".into(), password.clone());
+    attrs.insert("tls".into(), if row.tls_enabled != 0 { "true".into() } else { "false".into() });
+    // Convenient pre-built URL
+    let vh = if row.vhost == "/" { "".to_string() } else { format!("/{}", row.vhost.trim_start_matches('/')) };
+    attrs.insert(
+        "url".into(),
+        format!("{scheme}://{}:{}@{}:{}{}", row.username, password, row.host, row.port, vh),
+    );
+
+    Ok(ResolvedBinding {
+        kind: "mq_endpoint".into(),
+        ref_id: id.to_string(),
+        provisioned: false,
+        attributes: attrs,
+        is_secret: true,
+    })
+}
+
+async fn resolve_existing_smtp(state: &AppState, id: &str) -> AppResult<ResolvedBinding> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        host: String, port: u16,
+        username: Option<String>, password: Option<String>,
+        from_address: Option<String>, tls_enabled: i8,
+    }
+    let row: Row = sqlx::query_as(
+        "SELECT host, port, username, password, from_address, tls_enabled \
+         FROM smtp_endpoints WHERE id = ? AND is_active = 1",
+    )
+    .bind(id).fetch_optional(&state.db).await?
+    .ok_or_else(|| AppError::NotFound(format!("smtp_endpoint {id}")))?;
+
+    let password = match row.password.as_deref() {
+        Some(enc) if !enc.is_empty() => state.crypto.decrypt(enc)?,
+        _ => String::new(),
+    };
+    let mut attrs = std::collections::BTreeMap::new();
+    attrs.insert("host".into(), row.host);
+    attrs.insert("port".into(), row.port.to_string());
+    attrs.insert("user".into(), row.username.clone().unwrap_or_default());
+    attrs.insert("username".into(), row.username.unwrap_or_default());
+    attrs.insert("password".into(), password);
+    attrs.insert("from_address".into(), row.from_address.clone().unwrap_or_default());
+    attrs.insert("from".into(), row.from_address.unwrap_or_default());
+    attrs.insert("tls".into(), if row.tls_enabled != 0 { "true".into() } else { "false".into() });
+
+    Ok(ResolvedBinding {
+        kind: "smtp_endpoint".into(),
+        ref_id: id.to_string(),
+        provisioned: false,
+        attributes: attrs,
+        is_secret: true,
+    })
+}
+
+async fn resolve_existing_redis(state: &AppState, id: &str) -> AppResult<ResolvedBinding> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        host: String, port: u16, password: Option<String>,
+        db_index: i16, tls_enabled: i8,
+    }
+    let row: Row = sqlx::query_as(
+        "SELECT host, port, password, db_index, tls_enabled \
+         FROM redis_endpoints WHERE id = ? AND is_active = 1",
+    )
+    .bind(id).fetch_optional(&state.db).await?
+    .ok_or_else(|| AppError::NotFound(format!("redis_endpoint {id}")))?;
+
+    let password = match row.password.as_deref() {
+        Some(enc) if !enc.is_empty() => state.crypto.decrypt(enc)?,
+        _ => String::new(),
+    };
+    let scheme = if row.tls_enabled != 0 { "rediss" } else { "redis" };
+    let auth_part = if password.is_empty() {
+        String::new()
+    } else {
+        format!(":{password}@")
+    };
+
+    let mut attrs = std::collections::BTreeMap::new();
+    attrs.insert("host".into(), row.host.clone());
+    attrs.insert("port".into(), row.port.to_string());
+    attrs.insert("password".into(), password.clone());
+    attrs.insert("db".into(), row.db_index.to_string());
+    attrs.insert("tls".into(), if row.tls_enabled != 0 { "true".into() } else { "false".into() });
+    attrs.insert(
+        "url".into(),
+        format!("{scheme}://{auth_part}{}:{}/{}", row.host, row.port, row.db_index),
+    );
+
+    Ok(ResolvedBinding {
+        kind: "redis_endpoint".into(),
+        ref_id: id.to_string(),
+        provisioned: false,
+        attributes: attrs,
         is_secret: true,
     })
 }
@@ -658,28 +862,45 @@ async fn drop_provisioned_database(state: &AppState, instance_id: &str) -> AppRe
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn map_db_env_vars(
-    env_mapping: &serde_json::Map<String, serde_json::Value>,
-    host: &str,
-    port: u16,
-    db_name: &str,
-    db_user: &str,
-    db_password: &str,
-) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for (logical, target) in env_mapping {
-        let Some(target_key) = target.as_str() else { continue };
-        let value = match logical.as_str() {
-            "host" => host.to_string(),
-            "port" => port.to_string(),
-            "name" | "database" => db_name.to_string(),
-            "user" | "username" => db_user.to_string(),
-            "password" => db_password.to_string(),
-            _ => continue,
-        };
-        out.push((target_key.to_string(), value));
+/// Standard logical-attribute map for a database binding.
+/// Both `name`/`database` and `user`/`username` are populated so env_mapping
+/// and config templates can use whichever name is idiomatic.
+fn db_attrs(
+    host: &str, port: u16, db_name: &str, db_user: &str, db_password: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("host".into(), host.to_string());
+    m.insert("port".into(), port.to_string());
+    m.insert("name".into(), db_name.to_string());
+    m.insert("database".into(), db_name.to_string());
+    m.insert("user".into(), db_user.to_string());
+    m.insert("username".into(), db_user.to_string());
+    m.insert("password".into(), db_password.to_string());
+    m
+}
+
+/// Render a config-file template with the given attribute map using minijinja.
+/// Placeholders use the standard `{{ var }}` syntax; if/for/filters all work.
+fn render_config_file(
+    template: &str,
+    attrs: &std::collections::BTreeMap<String, String>,
+) -> Result<String, String> {
+    let env = minijinja::Environment::new();
+    let tmpl = env.template_from_str(template).map_err(|e| e.to_string())?;
+    let ctx: std::collections::BTreeMap<String, minijinja::Value> = attrs
+        .iter()
+        .map(|(k, v)| (k.clone(), minijinja::Value::from(v.clone())))
+        .collect();
+    tmpl.render(ctx).map_err(|e| e.to_string())
+}
+
+/// Split "/etc/app/db.yml" -> ("/etc/app", "db.yml") for app_file_mounts.
+fn split_path(full_path: &str) -> (String, String) {
+    match full_path.rsplit_once('/') {
+        Some(("", filename)) => ("/".to_string(), filename.to_string()),
+        Some((dir, filename)) => (dir.to_string(), filename.to_string()),
+        None => (".".to_string(), full_path.to_string()),
     }
-    out
 }
 
 fn parse_env_block(s: &str) -> Vec<(String, String)> {

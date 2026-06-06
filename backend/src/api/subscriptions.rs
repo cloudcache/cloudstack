@@ -42,40 +42,61 @@ async fn allocate_plan_to_default_project(
     user_id: &str,
     plan_id: &str,
 ) -> AppResult<()> {
-    let plan = sqlx::query!(
-        r#"SELECT quota_cpu_mcores, quota_mem_mb, quota_storage_gb,
-                  quota_bandwidth_gb, quota_domain_count, quota_db_instance_count,
-                  quota_app_count, quota_request_million
-           FROM subscription_plans WHERE id = ?"#,
-        plan_id
+    // NB: managed-binding quotas (mq/smtp/redis/s3) live alongside the
+    // existing DB/app quotas. They're loaded with non-macro query_as because
+    // the new columns may not be in the sqlx prepare cache yet.
+    #[derive(sqlx::FromRow)]
+    struct PlanRow {
+        quota_cpu_mcores: u32, quota_mem_mb: u32, quota_storage_gb: u32,
+        quota_bandwidth_gb: u32, quota_domain_count: u32,
+        quota_db_instance_count: u32, quota_app_count: u32, quota_request_million: u32,
+        quota_mq_binding_count: u32, quota_smtp_binding_count: u32,
+        quota_redis_binding_count: u32, quota_s3_binding_count: u32,
+    }
+    let plan: PlanRow = sqlx::query_as(
+        "SELECT quota_cpu_mcores, quota_mem_mb, quota_storage_gb, \
+                quota_bandwidth_gb, quota_domain_count, quota_db_instance_count, \
+                quota_app_count, quota_request_million, \
+                quota_mq_binding_count, quota_smtp_binding_count, \
+                quota_redis_binding_count, quota_s3_binding_count \
+         FROM subscription_plans WHERE id = ?",
     )
+    .bind(plan_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("plan {plan_id}")))?;
 
     let project_id = find_or_create_default_project(state, user_id).await?;
 
-    sqlx::query!(
-        r#"UPDATE projects SET
-             quota_cpu_mcores      = ?,
-             quota_mem_mb          = ?,
-             quota_storage_gb      = ?,
-             quota_bandwidth_gb    = ?,
-             quota_domain_count    = ?,
-             quota_db_instances    = ?,
-             quota_apps            = ?,
-             quota_request_million = ?
-           WHERE id = ?"#,
-        plan.quota_cpu_mcores,
-        plan.quota_mem_mb,
-        plan.quota_storage_gb,
-        plan.quota_bandwidth_gb,
-        plan.quota_domain_count,
-        plan.quota_db_instance_count,
-        plan.quota_app_count,
-        plan.quota_request_million,
-        project_id,
+    sqlx::query(
+        "UPDATE projects SET \
+             quota_cpu_mcores      = ?, \
+             quota_mem_mb          = ?, \
+             quota_storage_gb      = ?, \
+             quota_bandwidth_gb    = ?, \
+             quota_domain_count    = ?, \
+             quota_db_instances    = ?, \
+             quota_apps            = ?, \
+             quota_request_million = ?, \
+             quota_mq_bindings     = ?, \
+             quota_smtp_bindings   = ?, \
+             quota_redis_bindings  = ?, \
+             quota_s3_bindings     = ? \
+         WHERE id = ?",
     )
+    .bind(plan.quota_cpu_mcores)
+    .bind(plan.quota_mem_mb)
+    .bind(plan.quota_storage_gb)
+    .bind(plan.quota_bandwidth_gb)
+    .bind(plan.quota_domain_count)
+    .bind(plan.quota_db_instance_count)
+    .bind(plan.quota_app_count)
+    .bind(plan.quota_request_million)
+    .bind(plan.quota_mq_binding_count)
+    .bind(plan.quota_smtp_binding_count)
+    .bind(plan.quota_redis_binding_count)
+    .bind(plan.quota_s3_binding_count)
+    .bind(&project_id)
     .execute(&state.db)
     .await?;
 
@@ -214,15 +235,20 @@ fn plan_json(r: &PlanRow) -> serde_json::Value {
         "price_monthly": r.price_monthly,
         "price_annually": r.price_annually,
         "quota": {
-            "cpu_mcores":        r.quota_cpu_mcores,
-            "mem_mb":            r.quota_mem_mb,
-            "storage_gb":        r.quota_storage_gb,
-            "bandwidth_gb":      r.quota_bandwidth_gb,
-            "domain_count":      r.quota_domain_count,
-            "db_instance_count": r.quota_db_instance_count,
-            "project_count":     r.quota_project_count,
-            "app_count":         r.quota_app_count,
-            "request_million":   r.quota_request_million,
+            "cpu_mcores":          r.quota_cpu_mcores,
+            "mem_mb":              r.quota_mem_mb,
+            "storage_gb":          r.quota_storage_gb,
+            "bandwidth_gb":        r.quota_bandwidth_gb,
+            "domain_count":        r.quota_domain_count,
+            "db_instance_count":   r.quota_db_instance_count,
+            "project_count":       r.quota_project_count,
+            "app_count":           r.quota_app_count,
+            "request_million":     r.quota_request_million,
+            // P2c — managed-binding quotas (fetched separately via merge_p2c_quotas)
+            "mq_binding_count":    0,
+            "smtp_binding_count":  0,
+            "redis_binding_count": 0,
+            "s3_binding_count":    0,
         },
         "is_active": r.is_active != 0,
         "is_public": r.is_public != 0,
@@ -230,6 +256,32 @@ fn plan_json(r: &PlanRow) -> serde_json::Value {
         "created_at": r.created_at,
         "updated_at": r.updated_at,
     })
+}
+
+/// P2c — fetch the four managed-binding quotas for a plan and merge into
+/// the response JSON produced by `plan_json`. Run after macro-based queries
+/// so the older code keeps working.
+async fn merge_p2c_quotas(state: &AppState, plan_id: &str, value: &mut serde_json::Value) {
+    #[derive(sqlx::FromRow)]
+    struct Q { mq: u32, smtp: u32, redis: u32, s3: u32 }
+    if let Ok(Some(q)) = sqlx::query_as::<_, Q>(
+        "SELECT quota_mq_binding_count AS mq, quota_smtp_binding_count AS smtp, \
+                quota_redis_binding_count AS redis, quota_s3_binding_count AS s3 \
+         FROM subscription_plans WHERE id = ?",
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        if let Some(quota) = value.get_mut("quota") {
+            if let Some(obj) = quota.as_object_mut() {
+                obj.insert("mq_binding_count".into(),    q.mq.into());
+                obj.insert("smtp_binding_count".into(),  q.smtp.into());
+                obj.insert("redis_binding_count".into(), q.redis.into());
+                obj.insert("s3_binding_count".into(),    q.s3.into());
+            }
+        }
+    }
 }
 
 struct PlanRow {
@@ -277,7 +329,7 @@ pub async fn list_plans(
     .fetch_all(&state.db)
     .await?;
 
-    let plans: Vec<_> = rows
+    let mut plans: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
             plan_json(&PlanRow {
@@ -295,6 +347,13 @@ pub async fn list_plans(
             })
         })
         .collect();
+
+    // P2c: enrich each row with managed-binding quotas
+    for v in plans.iter_mut() {
+        if let Some(id) = v.get("id").and_then(|x| x.as_str()).map(String::from) {
+            merge_p2c_quotas(&state, &id, v).await;
+        }
+    }
 
     Ok(Json(plans))
 }
@@ -318,8 +377,8 @@ pub async fn get_plan(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("plan {plan_id}")))?;
 
-    Ok(Json(plan_json(&PlanRow {
-        id: r.id, name: r.name, display_name: r.display_name, description: r.description,
+    let mut value = plan_json(&PlanRow {
+        id: r.id.clone(), name: r.name, display_name: r.display_name, description: r.description,
         price_monthly: r.price_monthly, price_annually: r.price_annually,
         quota_cpu_mcores: r.quota_cpu_mcores, quota_mem_mb: r.quota_mem_mb,
         quota_storage_gb: r.quota_storage_gb, quota_bandwidth_gb: r.quota_bandwidth_gb,
@@ -329,7 +388,9 @@ pub async fn get_plan(
         quota_request_million: r.quota_request_million,
         is_active: r.is_active, is_public: r.is_public,
         sort_order: r.sort_order, created_at: r.created_at, updated_at: r.updated_at,
-    })))
+    });
+    merge_p2c_quotas(&state, &r.id, &mut value).await;
+    Ok(Json(value))
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -620,7 +681,11 @@ pub async fn admin_list_plans(
     .fetch_one(&state.db)
     .await?;
 
-    let data: Vec<_> = rows.into_iter().map(|r| {
+    let rows_for_merge: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.id.clone())
+        .collect();
+    let mut data: Vec<serde_json::Value> = rows.into_iter().map(|r| {
         let mut v = plan_json(&PlanRow {
             id: r.id.unwrap_or_default(),
             name: r.name.unwrap_or_default(),
@@ -646,6 +711,11 @@ pub async fn admin_list_plans(
         v["active_subscribers"] = serde_json::json!(r.active_subscribers);
         v
     }).collect();
+
+    // P2c — merge managed-binding quotas
+    for (v, id) in data.iter_mut().zip(rows_for_merge.iter()) {
+        merge_p2c_quotas(&state, id, v).await;
+    }
 
     Ok(Json(serde_json::json!({
         "data": data,
@@ -685,7 +755,7 @@ pub async fn admin_get_plan(
     .await?;
 
     let mut v = plan_json(&PlanRow {
-        id: r.id, name: r.name, display_name: r.display_name, description: r.description,
+        id: r.id.clone(), name: r.name, display_name: r.display_name, description: r.description,
         price_monthly: r.price_monthly, price_annually: r.price_annually,
         quota_cpu_mcores: r.quota_cpu_mcores, quota_mem_mb: r.quota_mem_mb,
         quota_storage_gb: r.quota_storage_gb, quota_bandwidth_gb: r.quota_bandwidth_gb,
@@ -697,6 +767,7 @@ pub async fn admin_get_plan(
         sort_order: r.sort_order, created_at: r.created_at, updated_at: r.updated_at,
     });
     v["active_subscribers"] = serde_json::json!(active_count);
+    merge_p2c_quotas(&state, &r.id, &mut v).await;
 
     Ok(Json(v))
 }
@@ -719,6 +790,15 @@ pub struct CreatePlanRequest {
     pub quota_request_million: u32,
     pub is_public: Option<bool>,
     pub sort_order: Option<i16>,
+    // P2c — managed-binding quotas (0 = unlimited)
+    #[serde(default)]
+    pub quota_mq_binding_count: u32,
+    #[serde(default)]
+    pub quota_smtp_binding_count: u32,
+    #[serde(default)]
+    pub quota_redis_binding_count: u32,
+    #[serde(default)]
+    pub quota_s3_binding_count: u32,
 }
 
 pub async fn admin_create_plan(
@@ -772,6 +852,24 @@ pub async fn admin_create_plan(
         other => AppError::Database(other),
     })?;
 
+    // P2c — apply managed-binding quotas via a non-macro UPDATE.
+    // (Kept separate from the macro INSERT above to avoid prepare-cache misses.)
+    sqlx::query(
+        "UPDATE subscription_plans SET \
+             quota_mq_binding_count    = ?, \
+             quota_smtp_binding_count  = ?, \
+             quota_redis_binding_count = ?, \
+             quota_s3_binding_count    = ? \
+         WHERE id = ?",
+    )
+    .bind(body.quota_mq_binding_count)
+    .bind(body.quota_smtp_binding_count)
+    .bind(body.quota_redis_binding_count)
+    .bind(body.quota_s3_binding_count)
+    .bind(&id)
+    .execute(&state.db)
+    .await?;
+
     Ok((
         axum::http::StatusCode::CREATED,
         Json(serde_json::json!({ "id": id })),
@@ -796,6 +894,11 @@ pub struct UpdatePlanRequest {
     pub is_active: Option<bool>,
     pub is_public: Option<bool>,
     pub sort_order: Option<i16>,
+    // P2c — managed-binding quotas (None = leave unchanged)
+    pub quota_mq_binding_count: Option<u32>,
+    pub quota_smtp_binding_count: Option<u32>,
+    pub quota_redis_binding_count: Option<u32>,
+    pub quota_s3_binding_count: Option<u32>,
 }
 
 pub async fn admin_update_plan(
@@ -843,6 +946,23 @@ pub async fn admin_update_plan(
         body.sort_order,
         plan_id,
     )
+    .execute(&state.db)
+    .await?;
+
+    // P2c — managed-binding quotas via non-macro UPDATE (None = leave unchanged)
+    sqlx::query(
+        "UPDATE subscription_plans SET \
+             quota_mq_binding_count    = COALESCE(?, quota_mq_binding_count), \
+             quota_smtp_binding_count  = COALESCE(?, quota_smtp_binding_count), \
+             quota_redis_binding_count = COALESCE(?, quota_redis_binding_count), \
+             quota_s3_binding_count    = COALESCE(?, quota_s3_binding_count) \
+         WHERE id = ?",
+    )
+    .bind(body.quota_mq_binding_count)
+    .bind(body.quota_smtp_binding_count)
+    .bind(body.quota_redis_binding_count)
+    .bind(body.quota_s3_binding_count)
+    .bind(&plan_id)
     .execute(&state.db)
     .await?;
 
@@ -1127,30 +1247,42 @@ pub async fn admin_assign_plan(
     if let Some(ref plan_id) = body.plan_id {
         let billing_cycle = body.billing_cycle.as_deref().unwrap_or("CUSTOM");
 
-        let plan_price = sqlx::query_scalar!(
-            r#"SELECT price_monthly FROM subscription_plans WHERE id = ? AND is_active = 1"#,
-            plan_id
+        let (price_monthly, price_annually): (Decimal, Option<Decimal>) = sqlx::query_as(
+            "SELECT price_monthly, price_annually FROM subscription_plans \
+             WHERE id = ? AND is_active = 1",
         )
+        .bind(plan_id)
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("plan {plan_id}")))?;
 
+        // Revenue attribution: a comp/gift assignment is not charged to the user's
+        // wallet, but we still record the plan's list value for the chosen cycle as
+        // `price_paid` so comps show up in revenue/MRR reporting instead of as 0.
+        // (price_paid is a recorded attribute — it never triggers a charge.)
+        let price_paid: Decimal = match billing_cycle {
+            "ANNUALLY" => price_annually.unwrap_or(price_monthly * Decimal::from(12)),
+            // MONTHLY / CUSTOM / LIFETIME → attribute the monthly list value as baseline
+            _ => price_monthly,
+        };
+
         cancel_active(&state, &user_id, "replaced by admin assignment").await?;
 
         let sub_id = Uuid::new_v4().to_string();
-        sqlx::query!(
-            r#"INSERT INTO user_subscriptions
-               (id, user_id, plan_id, status, billing_cycle,
-                started_at, expires_at, auto_renew, price_paid, created_by)
-               VALUES (?, ?, ?, 'ACTIVE', ?, NOW(), ?, ?, 0.00, ?)"#,
-            sub_id,
-            user_id,
-            plan_id,
-            billing_cycle,
-            body.expires_at.map(|dt| dt.naive_utc()),
-            body.auto_renew.unwrap_or(false) as i8,
-            auth.user_id,
+        sqlx::query(
+            "INSERT INTO user_subscriptions \
+               (id, user_id, plan_id, status, billing_cycle, \
+                started_at, expires_at, auto_renew, price_paid, created_by) \
+             VALUES (?, ?, ?, 'ACTIVE', ?, NOW(), ?, ?, ?, ?)",
         )
+        .bind(&sub_id)
+        .bind(&user_id)
+        .bind(plan_id)
+        .bind(billing_cycle)
+        .bind(body.expires_at.map(|dt| dt.naive_utc()))
+        .bind(body.auto_renew.unwrap_or(false) as i8)
+        .bind(price_paid)
+        .bind(&auth.user_id)
         .execute(&state.db)
         .await?;
 
@@ -1170,7 +1302,7 @@ pub async fn admin_assign_plan(
                 "mode": "plan_assigned",
                 "subscription_id": sub_id,
                 "status": "ACTIVE",
-                "plan_price": plan_price,
+                "price_paid": price_paid,
             })),
         ));
     }

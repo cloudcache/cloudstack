@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { Toast } from "@/frontend/utils/toast.utils";
+import { toast } from "sonner";
 import { useT } from "@/i18n";
 import {
     adminAdjustBalance,
@@ -107,6 +108,10 @@ export default function AdminBillingTab({
     const [adjustMode, setAdjustMode] = useState<'recharge' | 'adjust'>('recharge');
     const [amount, setAmount] = useState('');
     const [description, setDescription] = useState('');
+    // Idempotency key for the current balance dialog: generated once when the
+    // dialog opens and reused across retries/double-clicks so a single intended
+    // operation can never produce two ledger entries.
+    const [idempKey, setIdempKey] = useState('');
     const [invoiceOpen, setInvoiceOpen] = useState(false);
     const [invoiceUserId, setInvoiceUserId] = useState('');
     const [periodStart, setPeriodStart] = useState('');
@@ -128,6 +133,7 @@ export default function AdminBillingTab({
         setAdjustMode('recharge');
         setAmount('');
         setDescription('');
+        setIdempKey(crypto.randomUUID());
     };
 
     const openAdjust = (wallet: WalletItem) => {
@@ -135,17 +141,24 @@ export default function AdminBillingTab({
         setAdjustMode('adjust');
         setAmount('');
         setDescription('');
+        setIdempKey(crypto.randomUUID());
     };
 
     const handleBalanceSubmit = async () => {
         if (!adjustTarget) return;
         const numAmount = Number(amount);
         if (!Number.isFinite(numAmount) || numAmount === 0) return;
+        const reason = description.trim();
+        // A recharge/gift must carry a reason so the ledger entry is auditable.
+        if (adjustMode === 'recharge' && !reason) {
+            toast.error('A reason is required for a recharge/gift.');
+            return;
+        }
         setSaving(true);
         try {
             const result = adjustMode === 'recharge'
-                ? await Toast.fromAction(() => adminRecharge(adjustTarget.user_id, numAmount, description || undefined))
-                : await Toast.fromAction(() => adminAdjustBalance(adjustTarget.user_id, numAmount, description || t("business.billing.defaultAdjustment")));
+                ? await Toast.fromAction(() => adminRecharge(adjustTarget.user_id, numAmount, reason, idempKey))
+                : await Toast.fromAction(() => adminAdjustBalance(adjustTarget.user_id, numAmount, reason || t("business.billing.defaultAdjustment"), idempKey));
             const rawNewBalance = (result.data as { new_balance?: MoneyValue } | undefined)?.new_balance;
             const newBalance = rawNewBalance === undefined ? undefined : toNumber(rawNewBalance);
             setWallets(prev => prev.map(w =>

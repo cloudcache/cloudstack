@@ -26,8 +26,10 @@ import { useT } from "@/i18n"
 import type { TemplateDto, TemplateRequirement, TemplateBindingChoice } from "@/server/adapter/backend-api.adapter"
 
 // Per-requirement local UI state.
+// Note: a declared requirement is mandatory at deploy time — there is no
+// 'skip' mode. User must pick managed or provision and a concrete ref.
 type BindingFormState = {
-    mode: 'managed' | 'provision' | 'skip';
+    mode: 'managed' | 'provision';
     managed_ref_id?: string;
     provision_cluster_id?: string;
     provision_name_hint?: string;
@@ -59,20 +61,21 @@ export default function CreateTemplateAppSetupDialog({
     const [bindings, setBindings] = useState<Record<string, BindingFormState>>({});
     const [choices, setChoices] = useState<{
         databases: any[]; dbClusters: any[]; s3Targets: any[];
-    }>({ databases: [], dbClusters: [], s3Targets: [] });
+        mqEndpoints: any[]; smtpEndpoints: any[]; redisEndpoints: any[];
+    }>({ databases: [], dbClusters: [], s3Targets: [], mqEndpoints: [], smtpEndpoints: [], redisEndpoints: [] });
 
     // Reset on template change
     useEffect(() => {
         setIsOpen(!!appTemplate && !!projectId);
         form.reset(appTemplate);
         setSubmitError('');
-        // Initialize bindings from requirements
+        // Initialize bindings from requirements (declared = mandatory, default to first allowed mode)
         const reqs: TemplateRequirement[] = (templateDto?.requirements ?? []) as TemplateRequirement[];
         const initial: Record<string, BindingFormState> = {};
         for (const r of reqs) {
-            const modes = r.binding_modes ?? ['managed', 'provision'];
+            const modes = r.binding_modes ?? ['managed'];
             initial[r.key] = {
-                mode: r.required ? (modes[0] as any) : 'skip',
+                mode: (modes[0] as any) ?? 'managed',
                 provision_name_hint: r.key,
             };
         }
@@ -109,9 +112,8 @@ export default function CreateTemplateAppSetupDialog({
             input_overrides[input.key] = input.value;
         }
 
-        // Build bindings payload, dropping 'skip' entries
+        // Build bindings payload — every declared requirement must be present
         const bindingsPayload: TemplateBindingChoice[] = Object.entries(bindings)
-            .filter(([, b]) => b.mode !== 'skip')
             .map(([requirement_key, b]) => ({
                 requirement_key,
                 mode: b.mode,
@@ -193,27 +195,55 @@ export default function CreateTemplateAppSetupDialog({
                                         <div className="border-t pt-4 space-y-4">
                                             <div className="text-sm font-semibold">Service Dependencies</div>
                                             {requirements.map((req) => {
-                                                const b = bindings[req.key] ?? { mode: 'skip' };
-                                                const modes = req.binding_modes ?? ['managed', 'provision'];
+                                                const b = bindings[req.key] ?? { mode: 'managed' };
+                                                // What modes does this kind support?
+                                                // Per backend: only database supports provision; everything else managed-only.
+                                                const supportsProvision = req.kind === 'database';
+                                                const declaredModes = req.binding_modes ?? (supportsProvision ? ['managed', 'provision'] : ['managed']);
+                                                const modes = declaredModes.filter(m => m === 'managed' || (m === 'provision' && supportsProvision));
+
+                                                // Which list to show under "managed"?
+                                                const managedList: any[] = (() => {
+                                                    switch (req.kind) {
+                                                        case 'database': return choices.databases;
+                                                        case 'objstore': return choices.s3Targets;
+                                                        case 'mq': return choices.mqEndpoints;
+                                                        case 'smtp': return choices.smtpEndpoints;
+                                                        case 'cache': return choices.redisEndpoints;
+                                                        default: return [];
+                                                    }
+                                                })();
+                                                const managedPlaceholder = (() => {
+                                                    switch (req.kind) {
+                                                        case 'database': return 'Select database';
+                                                        case 'objstore': return 'Select S3 target';
+                                                        case 'mq': return 'Select MQ endpoint';
+                                                        case 'smtp': return 'Select SMTP relay';
+                                                        case 'cache': return 'Select Redis endpoint';
+                                                        default: return 'Select…';
+                                                    }
+                                                })();
+
                                                 return (
                                                     <div key={req.key} className="border rounded-md p-3 space-y-3">
                                                         <div className="flex items-center justify-between">
                                                             <div>
                                                                 <div className="font-medium">{req.label ?? req.key}</div>
-                                                                <div className="text-xs text-muted-foreground">{req.kind} · {req.engine || ''} {req.required && '· required'}</div>
+                                                                <div className="text-xs text-muted-foreground">{req.kind}{req.engine ? ` · ${req.engine}` : ''} · required</div>
                                                             </div>
-                                                            <Select
-                                                                value={b.mode}
-                                                                onValueChange={(v) => updateBinding(req.key, { mode: v as any })}>
-                                                                <SelectTrigger className="w-44">
-                                                                    <SelectValue />
-                                                                </SelectTrigger>
-                                                                <SelectContent>
-                                                                    {modes.includes('managed') && <SelectItem value="managed">Bind existing</SelectItem>}
-                                                                    {modes.includes('provision') && <SelectItem value="provision">Provision new</SelectItem>}
-                                                                    {!req.required && <SelectItem value="skip">Skip</SelectItem>}
-                                                                </SelectContent>
-                                                            </Select>
+                                                            {modes.length > 1 && (
+                                                                <Select
+                                                                    value={b.mode}
+                                                                    onValueChange={(v) => updateBinding(req.key, { mode: v as any })}>
+                                                                    <SelectTrigger className="w-44">
+                                                                        <SelectValue />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent>
+                                                                        {modes.includes('managed') && <SelectItem value="managed">Bind existing</SelectItem>}
+                                                                        {modes.includes('provision') && <SelectItem value="provision">Provision new</SelectItem>}
+                                                                    </SelectContent>
+                                                                </Select>
+                                                            )}
                                                         </div>
 
                                                         {b.mode === 'managed' && (
@@ -221,10 +251,10 @@ export default function CreateTemplateAppSetupDialog({
                                                                 value={b.managed_ref_id ?? ''}
                                                                 onValueChange={(v) => updateBinding(req.key, { managed_ref_id: v })}>
                                                                 <SelectTrigger>
-                                                                    <SelectValue placeholder={req.kind === 'objstore' ? "Select S3 target" : "Select database"} />
+                                                                    <SelectValue placeholder={managedPlaceholder} />
                                                                 </SelectTrigger>
                                                                 <SelectContent>
-                                                                    {(req.kind === 'objstore' ? choices.s3Targets : choices.databases).map((item: any) => (
+                                                                    {managedList.map((item: any) => (
                                                                         <SelectItem key={item.id} value={item.id}>
                                                                             {item.name ?? item.db_name ?? item.id}
                                                                             {item.cluster_name ? ` (${item.cluster_name})` : ''}

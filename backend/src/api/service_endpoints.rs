@@ -358,9 +358,9 @@ pub async fn redis_delete(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn unique_violation_to_conflict(
-    label: &'static str, name: &str,
-) -> impl Fn(sqlx::Error) -> AppError + '_ {
+fn unique_violation_to_conflict<'a>(
+    label: &'static str, name: &'a str,
+) -> impl Fn(sqlx::Error) -> AppError + 'a {
     move |e| match e {
         sqlx::Error::Database(ref de) if de.is_unique_violation() => {
             AppError::Conflict(format!("{label} '{name}' already exists"))

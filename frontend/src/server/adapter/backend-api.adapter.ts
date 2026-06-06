@@ -111,8 +111,16 @@ export const auth = {
         return req(`${BASE}/auth/login`, { method: 'POST', body: JSON.stringify({ username, password, totp_code }) });
     },
     /** POST /auth/register */
-    register(body: { username: string; email: string; password: string; display_name?: string }): Promise<{ id: string; message: string }> {
+    register(body: { username: string; email: string; password: string; display_name?: string }): Promise<{ id: string; message: string; email_verification_required?: boolean }> {
         return req(`${BASE}/auth/register`, { method: 'POST', body: JSON.stringify(body) });
+    },
+    /** POST /auth/verify-email  { token } — public, no auth header */
+    verifyEmail(token: string): Promise<{ ok: boolean }> {
+        return req(`${BASE}/auth/verify-email`, { method: 'POST', body: JSON.stringify({ token }) });
+    },
+    /** POST /auth/resend-verification  { email } — public */
+    resendVerification(email: string): Promise<{ ok: boolean }> {
+        return req(`${BASE}/auth/resend-verification`, { method: 'POST', body: JSON.stringify({ email }) });
     },
     /** POST /auth/forgot-password */
     forgotPassword(email: string): Promise<{ message: string }> {
@@ -549,6 +557,16 @@ export const apps = {
     /** POST /api/v1/projects/:project_id/apps/from-template */
     createFromTemplate(token: string, project_id: string, body: TemplateDeployRequest): Promise<{ id: string }> {
         return post(`${V1}/projects/${project_id}/apps/from-template`, token, body);
+    },
+    /** GET /api/v1/projects/:project_id/managed-usage — P2c usage panel */
+    managedUsage(token: string, project_id: string): Promise<{
+        db_instances:   { used: number; limit: number };
+        mq_bindings:    { used: number; limit: number };
+        smtp_bindings:  { used: number; limit: number };
+        redis_bindings: { used: number; limit: number };
+        s3_bindings:    { used: number; limit: number };
+    }> {
+        return get(`${V1}/projects/${project_id}/managed-usage`, token);
     },
     /** GET /api/v1/apps/:app_id — fetch by ID only, resolves project internally */
     getById(token: string, app_id: string): Promise<BackendApp> {
@@ -1136,13 +1154,13 @@ export const adminBilling = {
     listTransactions(token: string, p?: { search?: string; tx_type?: string; page?: number; per_page?: number }): Promise<Paginated<unknown>> {
         return get(`${V1}/admin/billing/transactions${qs({ ...p })}`, token);
     },
-    /** POST /api/v1/admin/billing/recharge  { user_id, amount, description? } */
-    recharge(token: string, user_id: string, amount: number, description?: string): Promise<{ transaction_id: string; new_balance: number }> {
-        return post(`${V1}/admin/billing/recharge`, token, { user_id, amount, description });
+    /** POST /api/v1/admin/billing/recharge  { user_id, amount, description, idempotency_key? } */
+    recharge(token: string, user_id: string, amount: number, description: string, idempotency_key?: string): Promise<{ transaction_id: string; new_balance: number }> {
+        return post(`${V1}/admin/billing/recharge`, token, { user_id, amount, description, idempotency_key });
     },
-    /** POST /api/v1/admin/billing/adjustment  { user_id, amount, description } */
-    adjust(token: string, user_id: string, amount: number, description: string): Promise<{ transaction_id: string; new_balance: number }> {
-        return post(`${V1}/admin/billing/adjustment`, token, { user_id, amount, description });
+    /** POST /api/v1/admin/billing/adjustment  { user_id, amount, description, idempotency_key? } */
+    adjust(token: string, user_id: string, amount: number, description: string, idempotency_key?: string): Promise<{ transaction_id: string; new_balance: number }> {
+        return post(`${V1}/admin/billing/adjustment`, token, { user_id, amount, description, idempotency_key });
     },
     /** GET /api/v1/admin/billing/invoices  ?status&page&per_page */
     listInvoices(token: string, p?: { status?: string; page?: number; per_page?: number }): Promise<Paginated<unknown>> {
@@ -1510,6 +1528,47 @@ export const adminIpPools = {
 // ADMIN — PLATFORM CONFIG
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SERVICE ENDPOINTS (MQ / SMTP / Redis) — admin CRUD + tenant list
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export const mqEndpoints = {
+    /** GET /api/v1/mq-endpoints — tenant-safe (id+name only) */
+    list(token: string): Promise<Array<{ id: string; name: string }>> {
+        return get(`${V1}/mq-endpoints`, token);
+    },
+};
+export const adminMqEndpoints = {
+    list(token: string): Promise<any[]> { return get(`${V1}/admin/mq-endpoints`, token); },
+    create(token: string, body: any): Promise<{ id: string }> { return post(`${V1}/admin/mq-endpoints`, token, body); },
+    update(token: string, id: string, body: any): Promise<void> { return put(`${V1}/admin/mq-endpoints/${id}`, token, body); },
+    delete(token: string, id: string): Promise<void> { return del(`${V1}/admin/mq-endpoints/${id}`, token); },
+};
+
+export const smtpEndpoints = {
+    list(token: string): Promise<Array<{ id: string; name: string }>> {
+        return get(`${V1}/smtp-endpoints`, token);
+    },
+};
+export const adminSmtpEndpoints = {
+    list(token: string): Promise<any[]> { return get(`${V1}/admin/smtp-endpoints`, token); },
+    create(token: string, body: any): Promise<{ id: string }> { return post(`${V1}/admin/smtp-endpoints`, token, body); },
+    update(token: string, id: string, body: any): Promise<void> { return put(`${V1}/admin/smtp-endpoints/${id}`, token, body); },
+    delete(token: string, id: string): Promise<void> { return del(`${V1}/admin/smtp-endpoints/${id}`, token); },
+};
+
+export const redisEndpoints = {
+    list(token: string): Promise<Array<{ id: string; name: string }>> {
+        return get(`${V1}/redis-endpoints`, token);
+    },
+};
+export const adminRedisEndpoints = {
+    list(token: string): Promise<any[]> { return get(`${V1}/admin/redis-endpoints`, token); },
+    create(token: string, body: any): Promise<{ id: string }> { return post(`${V1}/admin/redis-endpoints`, token, body); },
+    update(token: string, id: string, body: any): Promise<void> { return put(`${V1}/admin/redis-endpoints/${id}`, token, body); },
+    delete(token: string, id: string): Promise<void> { return del(`${V1}/admin/redis-endpoints/${id}`, token); },
+};
+
 export const adminPlatform = {
     /** GET /api/v1/admin/platform-config */
     list(token: string): Promise<Array<{ key: string; value: string; description?: string }>> {
@@ -1548,19 +1607,23 @@ export interface TemplateDto {
     version: number;
 }
 
+// A declared requirement is mandatory at deploy time. There is no `required`
+// field — declaration alone means the user must bind it.
 export interface TemplateRequirement {
     key: string;
-    kind: 'database' | 'objstore' | 'cache';
+    kind: 'database' | 'objstore' | 'cache' | 'mq' | 'smtp';
     engine?: string;
-    required?: boolean;
     label?: string;
+    /** logical key (host/port/password/…) -> env var name to inject */
     env_mapping?: Record<string, string>;
+    /** Per-requirement config files, rendered with minijinja from resolved attrs. */
+    config_files?: Array<{ path: string; template: string }>;
     binding_modes?: Array<'managed' | 'provision'>;
 }
 
 export interface TemplateBindingChoice {
     requirement_key: string;
-    mode: 'managed' | 'provision' | 'skip';
+    mode: 'managed' | 'provision';
     managed_ref_id?: string;
     provision_cluster_id?: string;
     provision_name_hint?: string;
@@ -1665,6 +1728,12 @@ const backendApi = {
     templates,
     adminTemplates,
     projectTemplates,
+    mqEndpoints,
+    adminMqEndpoints,
+    smtpEndpoints,
+    adminSmtpEndpoints,
+    redisEndpoints,
+    adminRedisEndpoints,
 };
 
 export default backendApi;

@@ -17,7 +17,7 @@ import {
   SidebarMenuSubItem,
   useSidebar
 } from "@/components/ui/sidebar"
-import { BookOpen, Boxes, ChartNoAxesCombined, ChevronDown, ChevronUp, CreditCard, Cpu, Database, Dot, FolderClosed, GitBranch, HardDrive, History, Info, Network, Plus, Server, Settings2, Shield, Tag, User, User2 } from "lucide-react"
+import { BookOpen, Boxes, ChartNoAxesCombined, ChevronDown, ChevronUp, CreditCard, Cpu, Database, Dot, FolderClosed, GitBranch, HardDrive, History, Info, Mail, MemoryStick, MessageSquare, Network, Plus, Server, Settings2, Shield, Tag, User, User2, Workflow } from "lucide-react"
 import Link from "next/link"
 import { EditProjectDialog } from "./projects/edit-project-dialog"
 import { SidebarLogoutButton } from "./sidebar-logout-button"
@@ -76,6 +76,10 @@ export function SidebarCient({
     { title: t("nav.loadBalancing"), url: "/resources/load-balancing", icon: GitBranch },
     { title: t("nav.registries"), url: "/resources/registries", icon: Shield },
     { title: t("nav.databaseClusters"), url: "/resources/databases", icon: Database },
+    { title: t("nav.mqEndpoints"), url: "/resources/mq-endpoints", icon: MessageSquare },
+    { title: t("nav.smtpEndpoints"), url: "/resources/smtp-endpoints", icon: Mail },
+    { title: t("nav.redisEndpoints"), url: "/resources/redis-endpoints", icon: MemoryStick },
+    { title: t("nav.appTemplates"), url: "/resources/app-templates", icon: Workflow },
     { title: t("nav.platformConfig"), url: "/resources/platform-config", icon: Settings2 },
   ];
 

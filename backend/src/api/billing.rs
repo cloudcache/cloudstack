@@ -456,13 +456,123 @@ pub async fn admin_list_transactions(
     })))
 }
 
-// ─── Admin: recharge ──────────────────────────────────────────────────────────
+// ─── Admin balance operations (audited) ───────────────────────────────────────
+//
+// Admin recharges/gifts and manual adjustments are financial events. They are
+// recorded in `wallet_transactions`, the append-only ledger (no UPDATE/DELETE
+// anywhere in the codebase), with full traceability:
+//   • 完整性  — wrapped in a DB transaction; target user existence is verified.
+//   • 唯一性  — an optional client `idempotency_key` (UNIQUE index, migration 026)
+//               makes a retried/double-submitted operation a no-op replay.
+//   • 可追溯  — every entry carries `operator_id` (which admin) + a mandatory reason.
+//   • 可审计  — the ledger is the immutable system of record.
+
+/// Shared core for admin balance mutations. Returns `(transaction_id, new_balance)`.
+/// If `idempotency_key` is supplied and already produced a ledger entry, that entry
+/// is returned unchanged — no second balance change is applied.
+async fn apply_admin_balance_change(
+    state: &AppState,
+    operator_id: &str,
+    user_id: &str,
+    amount: rust_decimal::Decimal,
+    tx_type: &str,
+    reason: &str,
+    idempotency_key: Option<&str>,
+) -> AppResult<(String, rust_decimal::Decimal)> {
+    // 完整性: target user must exist (clean error instead of an opaque FK failure).
+    let user_exists: Option<String> = sqlx::query_scalar("SELECT id FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?;
+    if user_exists.is_none() {
+        return Err(AppError::NotFound(format!("user {user_id}")));
+    }
+
+    // 唯一性: idempotent replay — if this key already produced a ledger entry,
+    // return it without applying a second balance change.
+    if let Some(key) = idempotency_key {
+        if let Some((id, bal)) = lookup_tx_by_key(state, key).await? {
+            return Ok((id, bal));
+        }
+    }
+
+    let mut db_tx = state.db.begin().await?;
+
+    sqlx::query(
+        "INSERT INTO user_wallets (user_id, balance) VALUES (?, ?) \
+         ON DUPLICATE KEY UPDATE balance = balance + VALUES(balance)",
+    )
+    .bind(user_id)
+    .bind(amount)
+    .execute(&mut *db_tx)
+    .await?;
+
+    let new_balance: rust_decimal::Decimal =
+        sqlx::query_scalar("SELECT balance FROM user_wallets WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(&mut *db_tx)
+            .await?;
+
+    let tx_id = Uuid::new_v4().to_string();
+    let insert = sqlx::query(
+        "INSERT INTO wallet_transactions \
+           (id, user_id, tx_type, amount, balance_after, description, operator_id, idempotency_key) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&tx_id)
+    .bind(user_id)
+    .bind(tx_type)
+    .bind(amount)
+    .bind(new_balance)
+    .bind(reason)
+    .bind(operator_id)
+    .bind(idempotency_key)
+    .execute(&mut *db_tx)
+    .await;
+
+    match insert {
+        Ok(_) => {
+            db_tx.commit().await?;
+            Ok((tx_id, new_balance))
+        }
+        Err(e) => {
+            // 唯一性 (race): a concurrent request with the same key won the unique
+            // index. Roll back and replay the winner's entry instead of double-crediting.
+            if let (sqlx::Error::Database(de), Some(key)) = (&e, idempotency_key) {
+                if de.is_unique_violation() {
+                    db_tx.rollback().await?;
+                    if let Some((id, bal)) = lookup_tx_by_key(state, key).await? {
+                        return Ok((id, bal));
+                    }
+                }
+            }
+            Err(e.into())
+        }
+    }
+}
+
+async fn lookup_tx_by_key(
+    state: &AppState,
+    key: &str,
+) -> AppResult<Option<(String, rust_decimal::Decimal)>> {
+    let row: Option<(String, rust_decimal::Decimal)> = sqlx::query_as(
+        "SELECT id, balance_after FROM wallet_transactions WHERE idempotency_key = ?",
+    )
+    .bind(key)
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(row)
+}
+
+// ─── Admin: recharge / gift ───────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct RechargeRequest {
     pub user_id: String,
     pub amount: rust_decimal::Decimal,
     pub description: Option<String>,
+    /// Client-generated key; a retried submit with the same key is a no-op replay.
+    pub idempotency_key: Option<String>,
 }
 
 pub async fn admin_recharge(
@@ -478,40 +588,24 @@ pub async fn admin_recharge(
         ));
     }
 
-    let mut db_tx = state.db.begin().await?;
+    // 可追溯: a recharge/gift must carry a reason so the ledger entry is auditable.
+    let reason = body.description.as_deref().map(str::trim).unwrap_or("");
+    if reason.is_empty() {
+        return Err(AppError::BadRequest(
+            "description (reason) is required for recharge".into(),
+        ));
+    }
 
-    sqlx::query!(
-        r#"INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)
-           ON DUPLICATE KEY UPDATE balance = balance + VALUES(balance)"#,
-        body.user_id,
+    let (tx_id, new_balance) = apply_admin_balance_change(
+        &state,
+        &auth.user_id,
+        &body.user_id,
         body.amount,
+        "RECHARGE",
+        reason,
+        body.idempotency_key.as_deref(),
     )
-    .execute(&mut *db_tx)
     .await?;
-
-    let new_balance = sqlx::query_scalar!(
-        r#"SELECT balance FROM user_wallets WHERE user_id = ?"#,
-        body.user_id
-    )
-    .fetch_one(&mut *db_tx)
-    .await?;
-
-    let tx_id = Uuid::new_v4().to_string();
-    sqlx::query!(
-        r#"INSERT INTO wallet_transactions
-           (id, user_id, tx_type, amount, balance_after, description, operator_id)
-           VALUES (?, ?, 'RECHARGE', ?, ?, ?, ?)"#,
-        tx_id,
-        body.user_id,
-        body.amount,
-        new_balance,
-        body.description,
-        auth.user_id,
-    )
-    .execute(&mut *db_tx)
-    .await?;
-
-    db_tx.commit().await?;
 
     Ok(Json(serde_json::json!({
         "transaction_id": tx_id,
@@ -527,6 +621,8 @@ pub struct AdjustmentRequest {
     /// Positive or negative delta
     pub amount: rust_decimal::Decimal,
     pub description: String,
+    /// Client-generated key; a retried submit with the same key is a no-op replay.
+    pub idempotency_key: Option<String>,
 }
 
 pub async fn admin_adjust_balance(
@@ -536,46 +632,23 @@ pub async fn admin_adjust_balance(
 ) -> AppResult<impl IntoResponse> {
     require_admin(&auth)?;
 
-    if body.description.trim().is_empty() {
+    let reason = body.description.trim();
+    if reason.is_empty() {
         return Err(AppError::BadRequest(
             "description is required for adjustments".into(),
         ));
     }
 
-    let mut db_tx = state.db.begin().await?;
-
-    sqlx::query!(
-        r#"INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)
-           ON DUPLICATE KEY UPDATE balance = balance + VALUES(balance)"#,
-        body.user_id,
+    let (tx_id, new_balance) = apply_admin_balance_change(
+        &state,
+        &auth.user_id,
+        &body.user_id,
         body.amount,
+        "ADJUSTMENT",
+        reason,
+        body.idempotency_key.as_deref(),
     )
-    .execute(&mut *db_tx)
     .await?;
-
-    let new_balance = sqlx::query_scalar!(
-        r#"SELECT balance FROM user_wallets WHERE user_id = ?"#,
-        body.user_id
-    )
-    .fetch_one(&mut *db_tx)
-    .await?;
-
-    let tx_id = Uuid::new_v4().to_string();
-    sqlx::query!(
-        r#"INSERT INTO wallet_transactions
-           (id, user_id, tx_type, amount, balance_after, description, operator_id)
-           VALUES (?, ?, 'ADJUSTMENT', ?, ?, ?, ?)"#,
-        tx_id,
-        body.user_id,
-        body.amount,
-        new_balance,
-        body.description.trim(),
-        auth.user_id,
-    )
-    .execute(&mut *db_tx)
-    .await?;
-
-    db_tx.commit().await?;
 
     Ok(Json(serde_json::json!({
         "transaction_id": tx_id,
@@ -602,6 +675,24 @@ pub async fn admin_generate_invoice(
     if body.period_end <= body.period_start {
         return Err(AppError::BadRequest(
             "period_end must be after period_start".into(),
+        ));
+    }
+
+    // Prevent duplicate invoices for the same user + period. The unique-violation
+    // mapping on the INSERT below only covers invoice_no (randomly generated each
+    // call), so there is no DB constraint enforcing period uniqueness; check here.
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM invoices \
+         WHERE user_id = ? AND period_start = ? AND period_end = ? LIMIT 1",
+    )
+    .bind(&body.user_id)
+    .bind(body.period_start)
+    .bind(body.period_end)
+    .fetch_optional(&state.db)
+    .await?;
+    if existing.is_some() {
+        return Err(AppError::Conflict(
+            "invoice for this period already exists".into(),
         ));
     }
 

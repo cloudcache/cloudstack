@@ -17,6 +17,8 @@ pub mod projects;
 pub mod proxy_managers;
 pub mod quota;
 pub mod registries;
+pub mod managed_usage;
+pub mod service_endpoints;
 pub mod subscriptions;
 pub mod templates;
 pub mod templates_deploy;
@@ -174,6 +176,14 @@ pub fn router(state: AppState) -> Router<AppState> {
         // ── Deploy an app from a template (resolves bindings) ────────────────
         .route("/projects/:project_id/apps/from-template",
             post(templates_deploy::deploy_from_template))
+        // ── Managed-binding usage (P2c) ──────────────────────────────────────
+        .route("/projects/:project_id/managed-usage",
+            get(managed_usage::get_managed_usage))
+
+        // ── Tenant-facing service endpoint lists (id+name only) ──────────────
+        .route("/mq-endpoints",    get(service_endpoints::mq_list_user))
+        .route("/smtp-endpoints",  get(service_endpoints::smtp_list_user))
+        .route("/redis-endpoints", get(service_endpoints::redis_list_user))
 
         // ── S3 targets (user: pick active targets for backup) ─────────────────
         .route("/s3-targets", get(object_storage::list_targets_user))
@@ -279,6 +289,19 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/admin/clusters/:id", get(clusters_admin::get).put(clusters_admin::update).delete(clusters_admin::delete))
         .route("/admin/templates", post(templates::admin_create))
         .route("/admin/templates/:id", put(templates::admin_update).delete(templates::admin_delete))
+        // ── Admin: service endpoint CRUD (MQ / SMTP / Redis) ─────────────────
+        .route("/admin/mq-endpoints",
+            get(service_endpoints::mq_list).post(service_endpoints::mq_create))
+        .route("/admin/mq-endpoints/:id",
+            put(service_endpoints::mq_update).delete(service_endpoints::mq_delete))
+        .route("/admin/smtp-endpoints",
+            get(service_endpoints::smtp_list).post(service_endpoints::smtp_create))
+        .route("/admin/smtp-endpoints/:id",
+            put(service_endpoints::smtp_update).delete(service_endpoints::smtp_delete))
+        .route("/admin/redis-endpoints",
+            get(service_endpoints::redis_list).post(service_endpoints::redis_create))
+        .route("/admin/redis-endpoints/:id",
+            put(service_endpoints::redis_update).delete(service_endpoints::redis_delete))
 
         // ── Admin: cluster-wide storage config ───────────────────────────────
         .route("/admin/cluster/storage", get(cluster::get_storage).put(cluster::update_storage))
@@ -321,6 +344,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/auth/registration-status", get(auth::registration_status))
         .route("/auth/forgot-password", post(auth::forgot_password))
         .route("/auth/reset-password", post(auth::reset_password))
+        .route("/auth/verify-email", post(auth::verify_email))
+        .route("/auth/resend-verification", post(auth::resend_verification))
         .layer(middleware::from_fn(crate::rate_limit::rate_limit))
         .layer(Extension(Arc::clone(&auth_limiter)));
 

@@ -108,13 +108,69 @@ pub async fn update_profile(
 
 // ─── Change password ──────────────────────────────────────────────────────────
 
+#[derive(Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// Self-service password change. Verifies the current password against whichever
+/// backend owns it (local argon2 hash, or LDAP bind for pure-LDAP users), then
+/// applies the new password to the same backend — mirroring the login auth path.
 pub async fn change_password(
-    State(_state): State<AppState>,
-    Extension(_auth): Extension<AuthUser>,
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(body): Json<ChangePasswordRequest>,
 ) -> AppResult<axum::http::StatusCode> {
-    Err(AppError::Forbidden(
-        "password changes are admin-managed; users may only manage SSH keys".into(),
-    ))
+    if body.new_password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "new password must be at least 8 characters".into(),
+        ));
+    }
+
+    let row = sqlx::query("SELECT username, password_hash FROM users WHERE id = ?")
+        .bind(&auth.user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+    let username: String = sqlx::Row::get(&row, "username");
+    let password_hash: Option<String> = sqlx::Row::get(&row, "password_hash");
+
+    // Verify the current password against whichever backend owns it.
+    if let Some(ref hash) = password_hash {
+        if !crate::api::auth::verify_password(&body.current_password, hash) {
+            return Err(AppError::Unauthorized("current password is incorrect".into()));
+        }
+    } else {
+        // Pure-LDAP user (no local hash) — verify by binding to LDAP.
+        let ldap = crate::auth::ldap::LdapService::new(state.config.ldap.clone());
+        ldap.authenticate(&username, &body.current_password)
+            .await
+            .map_err(|_| AppError::Unauthorized("current password is incorrect".into()))?;
+    }
+
+    // Apply the new password to the same backend(s) the login path uses.
+    if password_hash.is_some() {
+        let new_hash = crate::api::auth::hash_password(&body.new_password)?;
+        sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+            .bind(&new_hash)
+            .bind(&auth.user_id)
+            .execute(&state.db)
+            .await?;
+        // Mirror to LLDAP when present (non-fatal — user may be local-only).
+        let _ = state
+            .lldap
+            .change_password(&username, &body.new_password)
+            .await;
+    } else {
+        // LDAP-only — LDAP is authoritative; do not write a local hash.
+        state
+            .lldap
+            .change_password(&username, &body.new_password)
+            .await?;
+    }
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────

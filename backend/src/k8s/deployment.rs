@@ -127,6 +127,11 @@ pub async fn deploy_app(
     // ── Image pull secret (for private registries) ────────────────────────────
     // Determine the registry host: for GIT source use the internal registry,
     // for CONTAINER source use the domain of the image.
+    //
+    // Resolution order:
+    //   1. App-level container_registry_user/pass (legacy, set per-app)
+    //   2. Platform-level image_registries row referenced by app.image_registry_id
+    //      (set by template deploy; lets admins keep creds in one place — P0.3)
     let pull_secret_name = if let (Some(user), Some(enc_pass)) =
         (&app.container_registry_user, &app.container_registry_pass)
     {
@@ -138,7 +143,33 @@ pub async fn deploy_app(
         };
         Some(ensure_registry_secret(&client, &ns, app_id, &reg_host, user, &password).await?)
     } else {
-        None
+        // Fall back to platform-level registry if linked
+        let registry_id: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT image_registry_id FROM apps WHERE id = ?",
+        )
+        .bind(app_id)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
+        if let Some(reg_id) = registry_id {
+            #[derive(sqlx::FromRow)]
+            struct Reg { endpoint: String, username: Option<String>, password: Option<String> }
+            let reg: Option<Reg> = sqlx::query_as(
+                "SELECT endpoint, username, password FROM image_registries \
+                 WHERE id = ? AND is_active = 1",
+            )
+            .bind(&reg_id)
+            .fetch_optional(&state.db)
+            .await?;
+            if let Some(reg) = reg {
+                if let (Some(u), Some(enc_p)) = (reg.username, reg.password) {
+                    if !u.is_empty() && !enc_p.is_empty() {
+                        let p = state.crypto.decrypt(&enc_p)?;
+                        Some(ensure_registry_secret(&client, &ns, app_id, &reg.endpoint, &u, &p).await?)
+                    } else { None }
+                } else { None }
+            } else { None }
+        } else { None }
     };
 
     // ── Load file mounts ──────────────────────────────────────────────────────

@@ -25,9 +25,14 @@ interface NodeItem {
     mem_capacity_mb?: number;
     storage_path?: string;
     cluster_name?: string;
+    cluster_display_name?: string;
     cluster_id?: string;
+    cluster_orchestrator?: 'K3S' | 'DOCKER';
     pool_name?: string;
     pool_display_name?: string;
+    ip_pool_name?: string;
+    ip_pool_cidr?: string;
+    ip_pool_gateway?: string;
     last_seen_at?: string;
 }
 
@@ -173,13 +178,33 @@ export default function AdminNodesTab({ initialItems, clusters }: { initialItems
                                     <div className="text-sm text-muted-foreground space-y-1">
                                         <div><span className="font-medium">{t('admin.nodes.ip')}:</span> {node.ip_address}</div>
                                         {node.node_role && <div><span className="font-medium">{t('admin.nodes.role')}:</span> {node.node_role}</div>}
-                                        {node.cluster_name && <div><span className="font-medium">{t('admin.nodes.cluster')}:</span> {node.cluster_name}</div>}
+                                        {node.cluster_name && (
+                                            <div className="flex items-center gap-1 flex-wrap">
+                                                <span className="font-medium">{t('admin.nodes.cluster')}:</span>
+                                                <span>{node.cluster_display_name ?? node.cluster_name}</span>
+                                                {node.cluster_display_name && node.cluster_name && node.cluster_display_name !== node.cluster_name && (
+                                                    <span className="text-xs text-muted-foreground">({node.cluster_name})</span>
+                                                )}
+                                                {node.cluster_orchestrator && (
+                                                    <Badge variant="outline" className="ml-1">{node.cluster_orchestrator}</Badge>
+                                                )}
+                                            </div>
+                                        )}
                                         {(node.pool_display_name || node.pool_name) && (
                                             <div>
                                                 <span className="font-medium">{t('admin.nodes.pool')}:</span> {node.pool_display_name ?? node.pool_name}
                                                 {node.pool_display_name && node.pool_name && node.pool_display_name !== node.pool_name && (
                                                     <span className="text-xs text-muted-foreground"> ({node.pool_name})</span>
                                                 )}
+                                            </div>
+                                        )}
+                                        {node.ip_pool_name && (
+                                            <div>
+                                                <span className="font-medium">IP pool:</span>{' '}
+                                                <span className="font-mono text-xs">
+                                                    {node.ip_pool_name} · {node.ip_pool_cidr}
+                                                    {node.ip_pool_gateway ? ` gw ${node.ip_pool_gateway}` : ''}
+                                                </span>
                                             </div>
                                         )}
                                         {node.cpu_capacity_mcores !== undefined && (
