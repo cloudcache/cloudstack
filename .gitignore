@@ -45,7 +45,9 @@ next-env.d.ts
 frontend/next-env.d.ts
 .devcontainer/devcontainer.env
 
-db
+# Anchored so this only ignores a top-level data dir, not backend/src/db
+# (which holds the required migrations + db module).
+/db/
 kube-config.config
 kube-config.config_clusteradmin
 kube-config.config_old
