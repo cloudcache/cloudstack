@@ -24,9 +24,12 @@ Legend: `[ ]` open · `[x]` done · `[~]` needs product decision (do not auto-fi
   existed. New handler verifies the current password against whichever backend owns it (local argon2
   hash, or LDAP bind for pure-LDAP users) then applies the new password to the same backend —
   mirroring the login auth path. Made `verify_password` `pub(crate)`. *(iter 3)*
-- [ ] **U-1b `update_profile` (display name / identity) still a 403 stub** (`profile.rs`). Separate
-  from passwords — identity fields are currently admin/LDAP-managed by design. Revisit only if
-  self-service identity edits are wanted.
+- [x] **U-1b Self-service `update_profile` (display name) implemented.** Was a 403 stub. Backend
+  (`profile.rs`) now validates `display_name` (non-empty, ≤128), updates the local row + mirrors to
+  LLDAP (`update_user`, non-fatal) — same dual path as login/change_password. Username & email stay
+  admin/LDAP-managed. Frontend: new `profile-info.tsx` card (editable display name; username/email
+  shown read-only) + `updateProfile` action, wired into the profile page (`me` already returns the
+  fields). Backend green, touched FE files typecheck clean. *(iter 8)*
 - [ ] **U-2 Password reset not gated on email verification.** `forgot_password` issues a reset link to
   any active user incl. unverified ones; after reset they log in then immediately hit the
   EMAIL_NOT_VERIFIED block. Consider auto-verifying on successful reset, or gating reset.
@@ -129,12 +132,19 @@ Legend: `[ ]` open · `[x]` done · `[~]` needs product decision (do not auto-fi
   (`apps.rs:1423`): a "database-as-app" user feature; `deployment.rs` does not special-case it, so it's
   ordinary user-driven container deployment, not platform pod-creation. Product decision to deprecate,
   not dead code.
-- **`db-tools` feature** (`deploy_db_tool` stub + `app_db_tools` table + routes + FULL frontend UI:
-  Credentials tab dbgate/phpmyadmin/db-tools components, adapter, i18n): backend is a non-functional
-  stub (writes a row, status stuck STARTING). Deploying a phpmyadmin/dbgate **container** via k8s
-  contradicts the external-services model → conceptually obsolete. BUT it has full UI wiring →
-  **removing it is a feature-removal decision, NOT silent dead-code cleanup.** ⏳ AWAITING OWNER CALL:
-  remove / rework-for-external-model / leave-as-known-disabled.
+- [x] **`db-tools` reworked into an external-client connection helper** (owner chose "rework to fit
+  external model"). The old model deployed a hosted dbgate/phpmyadmin/pgadmin **container** per app via
+  k8s — incompatible with external services. Discovered the `DbCredentials` card already surfaces
+  creds + a connection URL, so the rework adds *value* without duplication:
+  - Backend: removed `list/deploy/get/delete_db_tool` handlers + DeployDbToolRequest (`apps.rs`) and
+    their routes (`mod.rs`); migration `027_drop_app_db_tools.sql` drops the now-unused table. Build
+    verified green (foreground).
+  - Frontend: `db-tools.tsx` rewritten into a "Connect from an external client" card that renders a
+    copyable per-dialect CLI command (psql / mysql / mongosh / redis-cli) built from the real
+    `db-credentials` response; deleted `db-gate-db-tool.tsx` + `phpmyadmin-db-tool.tsx`; trimmed
+    `credentials/actions.ts` to just `getDatabaseCredentials`; removed the adapter `dbTools` block;
+    fixed the now-inaccurate `app.dbTools.title/description` copy (en+zh). Touched files typecheck
+    clean. *(iter 7)*
 
 ### Build-integrity fix (iter 7)
 - [x] **api/billing.rs `apply_admin_balance_change` did not compile** (E0382 use-after-move of

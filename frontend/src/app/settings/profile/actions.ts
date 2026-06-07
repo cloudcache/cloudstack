@@ -24,6 +24,13 @@ export const changePassword = async (prevState: any, inputData: z.infer<typeof c
         await backend.profile.changePassword(token, validatedData.oldPassword, validatedData.newPassword);
     });
 
+export const updateProfile = async (displayName: string) =>
+    simpleAction(async () => {
+        const token = await getBackendToken();
+        await backend.profile.update(token, { display_name: displayName });
+        return new SuccessActionResult(undefined, 'Profile updated.');
+    });
+
 export const createNewTotpToken = async () =>
     simpleAction(async () => {
         const token = await getBackendToken();

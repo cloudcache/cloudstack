@@ -100,6 +100,13 @@ pub async fn create(
         ));
     }
 
+    // Enforce the per-project DB-instance quota — the same gate the template
+    // deploy path uses (managed_usage counts database_instances rows directly),
+    // so creating a DB directly here can no longer bypass the limit.
+    let mut incoming = std::collections::HashMap::new();
+    incoming.insert("database_instance".to_string(), 1i64);
+    super::managed_usage::check_binding_allowed(&state, &project_id, &incoming).await?;
+
     let db_name = format!("p_{}_{}", project_name, body.name);
     let db_user = format!(
         "u_{}_{}",

@@ -228,12 +228,6 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/projects/:project_id/apps/:app_id/managed-volumes/:vid/backups/:bid/run",
             post(apps::run_volume_backup))
 
-        // ── App: DB management tools ──────────────────────────────────────────
-        .route("/projects/:project_id/apps/:app_id/db-tools",
-            get(apps::list_db_tools).post(apps::deploy_db_tool))
-        .route("/projects/:project_id/apps/:app_id/db-tools/:tool",
-            get(apps::get_db_tool).delete(apps::delete_db_tool))
-
         // ── Domains ───────────────────────────────────────────────────────────
         .route("/projects/:project_id/apps/:app_id/domains", get(domains::list).post(domains::create))
         .route("/projects/:project_id/apps/:app_id/domains/:domain_id", delete(domains::delete_domain))

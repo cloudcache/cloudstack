@@ -97,13 +97,48 @@ pub async fn get_profile(
     })))
 }
 
+#[derive(Deserialize)]
+pub struct UpdateProfileRequest {
+    pub display_name: String,
+}
+
+/// Self-service profile update. Currently scoped to `display_name` (email and
+/// username remain admin/LDAP-managed). Updates the local row and mirrors to
+/// LLDAP — the same dual path the login flow uses.
 pub async fn update_profile(
-    State(_state): State<AppState>,
-    Extension(_auth): Extension<AuthUser>,
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(body): Json<UpdateProfileRequest>,
 ) -> AppResult<axum::http::StatusCode> {
-    Err(AppError::Forbidden(
-        "profile identity fields are admin-managed; users may only manage SSH keys".into(),
-    ))
+    let display_name = body.display_name.trim();
+    if display_name.is_empty() {
+        return Err(AppError::BadRequest("display_name must not be empty".into()));
+    }
+    if display_name.chars().count() > 128 {
+        return Err(AppError::BadRequest(
+            "display_name too long (max 128 characters)".into(),
+        ));
+    }
+
+    let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+        .bind(&auth.user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+
+    sqlx::query("UPDATE users SET display_name = ?, updated_at = NOW() WHERE id = ?")
+        .bind(display_name)
+        .bind(&auth.user_id)
+        .execute(&state.db)
+        .await?;
+
+    // Mirror to LLDAP (non-fatal — user may be local-only).
+    let _ = state
+        .lldap
+        .update_user(&username, Some(display_name), None)
+        .await;
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 // ─── Change password ──────────────────────────────────────────────────────────

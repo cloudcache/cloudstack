@@ -824,24 +824,6 @@ export const apps = {
             return del(`${V1}/projects/${project_id}/apps/${app_id}/basic-auth`, token);
         },
     },
-    dbTools: {
-        /** GET /api/v1/projects/:project_id/apps/:app_id/db-tools */
-        list(token: string, project_id: string, app_id: string): Promise<unknown[]> {
-            return get(`${V1}/projects/${project_id}/apps/${app_id}/db-tools`, token);
-        },
-        /** POST /api/v1/projects/:project_id/apps/:app_id/db-tools */
-        deploy(token: string, project_id: string, app_id: string, tool: string): Promise<{ id: string; username: string; password: string }> {
-            return post(`${V1}/projects/${project_id}/apps/${app_id}/db-tools`, token, { tool });
-        },
-        /** GET /api/v1/projects/:project_id/apps/:app_id/db-tools/:tool */
-        get(token: string, project_id: string, app_id: string, tool: string): Promise<{ id: string; tool: string; status: string; access_url?: string; username?: string; password?: string }> {
-            return get(`${V1}/projects/${project_id}/apps/${app_id}/db-tools/${tool}`, token);
-        },
-        /** DELETE /api/v1/projects/:project_id/apps/:app_id/db-tools/:tool */
-        delete(token: string, project_id: string, app_id: string, tool: string): Promise<void> {
-            return del(`${V1}/projects/${project_id}/apps/${app_id}/db-tools/${tool}`, token);
-        },
-    },
     managedVolumes: {
         /** GET /api/v1/projects/:project_id/apps/:app_id/managed-volumes */
         list(token: string, project_id: string, app_id: string): Promise<unknown[]> {
