@@ -107,8 +107,8 @@ export interface LoginResponse {
 
 export const auth = {
     /** POST /auth/login */
-    login(username: string, password: string, totp_code?: string): Promise<LoginResponse> {
-        return req(`${BASE}/auth/login`, { method: 'POST', body: JSON.stringify({ username, password, totp_code }) });
+    login(username: string, password: string): Promise<LoginResponse> {
+        return req(`${BASE}/auth/login`, { method: 'POST', body: JSON.stringify({ username, password }) });
     },
     /** POST /auth/register */
     register(body: { username: string; email: string; password: string; display_name?: string }): Promise<{ id: string; message: string; email_verification_required?: boolean }> {
@@ -144,18 +144,6 @@ export const auth = {
     /** POST /api/v1/auth/logout */
     logout(token: string): Promise<void> {
         return post(`${V1}/auth/logout`, token);
-    },
-    /** POST /api/v1/auth/totp/setup */
-    totpSetup(token: string): Promise<{ secret: string; qr_url: string }> {
-        return post(`${V1}/auth/totp/setup`, token);
-    },
-    /** POST /api/v1/auth/totp/verify  { code } */
-    totpVerify(token: string, code: string): Promise<void> {
-        return post(`${V1}/auth/totp/verify`, token, { code });
-    },
-    /** POST /api/v1/auth/totp/disable */
-    totpDisable(token: string): Promise<void> {
-        return post(`${V1}/auth/totp/disable`, token);
     },
     /** GET /auth/registration-status */
     registrationStatus(): Promise<{ enabled: boolean; first_boot: boolean }> {

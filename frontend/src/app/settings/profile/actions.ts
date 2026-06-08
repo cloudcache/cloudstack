@@ -31,22 +31,3 @@ export const updateProfile = async (displayName: string) =>
         return new SuccessActionResult(undefined, 'Profile updated.');
     });
 
-export const createNewTotpToken = async () =>
-    simpleAction(async () => {
-        const token = await getBackendToken();
-        const result = await backend.auth.totpSetup(token);
-        return new SuccessActionResult(result);
-    });
-
-export const verifyTotpToken = async (prevState: any, inputData: { totp: string }) =>
-    saveFormAction(inputData, z.object({ totp: z.string().min(6) }), async (validatedData) => {
-        const token = await getBackendToken();
-        await backend.auth.totpVerify(token, validatedData.totp);
-    });
-
-export const deactivate2fa = async () =>
-    simpleAction(async () => {
-        const token = await getBackendToken();
-        await backend.auth.totpDisable(token);
-        return new SuccessActionResult(undefined, '2FA settings deactivated successfully');
-    });

@@ -33,8 +33,11 @@ Legend: `[ ]` open · `[x]` done · `[~]` needs product decision (do not auto-fi
 - [ ] **U-2 Password reset not gated on email verification.** `forgot_password` issues a reset link to
   any active user incl. unverified ones; after reset they log in then immediately hit the
   EMAIL_NOT_VERIFIED block. Consider auto-verifying on successful reset, or gating reset.
-- [ ] **U-3 TOTP enable requires no password re-auth** (`auth.rs` `totp_setup`/`totp_verify`). An open
-  session can enable 2FA and lock out the real owner. Lower priority; adds friction — confirm intent.
+- [x] **U-3 obsolete — TOTP removed entirely.** Per owner, 2FA is delegated to the IdP (LLDAP). Removed
+  the half-baked app-level TOTP: backend handlers + routes + login verification + `totp_code`/
+  `totp_enabled`; frontend totp-settings/create-dialog/two-fa-auth/totp.model + adapter methods +
+  auth-options totpToken; migration `029` drops `totp_credentials`. (Unused `totp_rs` dep + i18n keys
+  left as harmless cleanup.) *(iter 10)*
 - [ ] **U-4 No admin "mark email verified" escape hatch.** If verification mail is lost, admin can only
   trigger resend. Consider `PATCH /admin/users/:id { email_verified }`.
 - [ ] **U-5 Frontend verify-email UX inconsistency.** Login error message is zh; `/verify-email` page is
@@ -185,6 +188,21 @@ honors the relevant `RunContainerRequest` fields).
   Note: agent change (inspect endpoint) requires redistributing the qs-agent binary + re-provisioning
   Docker nodes before Docker builds work end-to-end.
 - [ ] **Cordon/drain has no Docker equivalent.** OPEN.
+
+## Registry push-auth closed loop (iter 10)
+
+- [x] **Registry credentials are now settable + used by both builders.** Previously kaniko pushed
+  anonymously (only `registry_host` existed) — private registries would fail. Now:
+  - `platform.rs`: `registry_host/username/password/insecure` whitelisted in `set_config`;
+    `registry_password` treated as sensitive (AES-encrypted on set, masked `***` on list).
+  - Build (`builds.rs`): `build_registry_config_json` builds a docker `config.json` from the creds
+    (decrypt best-effort, omitted when unset). Docker build mounts it at
+    `/kaniko/.docker/config.json` (file-mount); **K8s build now creates a Secret + mounts it** at
+    `/kaniko/.docker` (was missing). `--insecure`/`--skip-tls-verify` added when `registry_insecure`.
+  - Frontend: new **Image Registry** card in the Platform Config tab (host/username/insecure +
+    write-only password; registry keys hidden from the generic key list). Closed loop:
+    set (encrypted) → used by both backends.
+  - Caveat: still runtime-untested; needs a real registry + migration run to confirm push auth.
 
 ### Dropped after verification (NOT bugs)
 - Subscription renewal "loop not transactional": each `renew_one` is independently atomic and the due

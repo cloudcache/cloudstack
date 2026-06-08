@@ -113,9 +113,82 @@ function NodePortConfigCard({ initialConfig }: { initialConfig: ConfigEntry[] })
     );
 }
 
-// ── Nodeport config keys to hide from the generic table ──────────────────────
+// ── Image Registry Card ──────────────────────────────────────────────────────
+
+function RegistryConfigCard({ initialConfig }: { initialConfig: ConfigEntry[] }) {
+    const t = useT();
+    const getVal = (key: string, fallback: string) =>
+        initialConfig.find(c => c.key === key)?.value ?? fallback;
+
+    const [host, setHost] = useState(getVal('registry_host', ''));
+    const [username, setUsername] = useState(getVal('registry_username', ''));
+    const [insecure, setInsecure] = useState(getVal('registry_insecure', '0') === '1');
+    // Password is write-only (masked on read); blank means "keep current".
+    const [password, setPassword] = useState('');
+    const [saving, setSaving] = useState(false);
+
+    const handleSave = async () => {
+        setSaving(true);
+        try {
+            await setPlatformConfig('registry_host', host.trim());
+            await setPlatformConfig('registry_username', username.trim());
+            await setPlatformConfig('registry_insecure', insecure ? '1' : '0');
+            if (password.trim()) {
+                await setPlatformConfig('registry_password', password.trim());
+                setPassword('');
+            }
+            toast.success(t('common.save'));
+        } catch {
+            toast.error('Failed to save registry settings');
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle className="text-base">Image Registry</CardTitle>
+                <CardDescription>
+                    Registry that built images are pushed to (used by GIT-source builds on both K3S and Docker).
+                </CardDescription>
+            </CardHeader>
+            <CardContent>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                        <Label htmlFor="reg-host">Registry host</Label>
+                        <Input id="reg-host" value={host} onChange={e => setHost(e.target.value)}
+                            placeholder="registry.example.com" className="font-mono" />
+                    </div>
+                    <div className="space-y-2">
+                        <Label htmlFor="reg-user">Username</Label>
+                        <Input id="reg-user" value={username} onChange={e => setUsername(e.target.value)}
+                            className="font-mono" />
+                    </div>
+                    <div className="space-y-2">
+                        <Label htmlFor="reg-pass">Password</Label>
+                        <Input id="reg-pass" type="password" value={password}
+                            onChange={e => setPassword(e.target.value)}
+                            placeholder="leave blank to keep current" className="font-mono" />
+                    </div>
+                    <div className="flex items-center gap-2 pt-7">
+                        <input id="reg-insecure" type="checkbox" checked={insecure}
+                            onChange={e => setInsecure(e.target.checked)} />
+                        <Label htmlFor="reg-insecure">Insecure (http / skip TLS verify)</Label>
+                    </div>
+                </div>
+                <Button onClick={handleSave} disabled={saving} size="sm" className="mt-4">
+                    <Save className="mr-2 h-4 w-4" />{saving ? t('common.saving') : t('common.save')}
+                </Button>
+            </CardContent>
+        </Card>
+    );
+}
+
+// ── Config keys with dedicated cards — hidden from the generic table ─────────
 
 const NODEPORT_KEYS = new Set(['nodeport_range_start', 'nodeport_range_end', 'nodeport_reserved']);
+const REGISTRY_KEYS = new Set(['registry_host', 'registry_url', 'registry_username', 'registry_password', 'registry_insecure']);
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
@@ -159,12 +232,13 @@ export default function AdminPlatformConfigTab({ initialConfig }: { initialConfi
         setForm({ key: '', value: '' });
     };
 
-    // Filter out nodeport keys from generic list — they have their own card
-    const genericConfig = config.filter(c => !NODEPORT_KEYS.has(c.key));
+    // Keys with dedicated cards are hidden from the generic list.
+    const genericConfig = config.filter(c => !NODEPORT_KEYS.has(c.key) && !REGISTRY_KEYS.has(c.key));
 
     return (
         <>
             <NodePortConfigCard initialConfig={config} />
+            <RegistryConfigCard initialConfig={config} />
 
             <Card>
                 <CardHeader className="flex flex-row items-start justify-between">

@@ -711,6 +711,59 @@ async fn run_build_job(
     let registry = load_cfg(state, "registry_host").await;
     let image_tag = format!("{}/{}:latest", registry, app.app_name);
     let build_ref = format!("{}/{}:build-{}", registry, app.app_name, &build_id[..8]);
+    let insecure = load_cfg(state, "registry_insecure").await == "1";
+
+    let mut args = vec![
+        format!("--context=git://{git_url}#refs/heads/{branch}"),
+        format!("--destination={image_tag}"),
+        format!("--destination={build_ref}"),
+        "--cache=true".to_string(),
+        "--cache-ttl=24h".to_string(),
+    ];
+    if insecure {
+        args.push("--insecure".to_string());
+        args.push("--skip-tls-verify".to_string());
+    }
+
+    // Optional registry push auth: a Secret holding config.json mounted where
+    // kaniko reads it (/kaniko/.docker/config.json). Omitted for anonymous push.
+    use k8s_openapi::api::core::v1::{KeyToPath, Secret, SecretVolumeSource, Volume, VolumeMount};
+    let mut volumes: Vec<Volume> = Vec::new();
+    let mut volume_mounts: Vec<VolumeMount> = Vec::new();
+    if let Some(content) = build_registry_config_json(state, &registry).await {
+        let secret_name = format!("qs-build-reg-{}", &build_id[..8]);
+        let mut data = std::collections::BTreeMap::new();
+        data.insert("config.json".to_string(), content);
+        let secret = Secret {
+            metadata: ObjectMeta {
+                name: Some(secret_name.clone()),
+                namespace: Some(app.namespace.clone()),
+                ..Default::default()
+            },
+            string_data: Some(data),
+            ..Default::default()
+        };
+        let secrets: Api<Secret> = Api::namespaced(kube.clone(), &app.namespace);
+        let _ = secrets.create(&PostParams::default(), &secret).await; // best-effort
+        volumes.push(Volume {
+            name: "docker-config".to_string(),
+            secret: Some(SecretVolumeSource {
+                secret_name: Some(secret_name),
+                items: Some(vec![KeyToPath {
+                    key: "config.json".to_string(),
+                    path: "config.json".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        volume_mounts.push(VolumeMount {
+            name: "docker-config".to_string(),
+            mount_path: "/kaniko/.docker".to_string(),
+            ..Default::default()
+        });
+    }
 
     let mut labels = BTreeMap::new();
     labels.insert("qs-build-id".to_string(), build_id[..8].to_string());
@@ -736,13 +789,7 @@ async fn run_build_job(
                     containers: vec![Container {
                         name: "builder".to_string(),
                         image: Some("gcr.io/kaniko-project/executor:latest".to_string()),
-                        args: Some(vec![
-                            format!("--context=git://{git_url}#refs/heads/{branch}"),
-                            format!("--destination={image_tag}"),
-                            format!("--destination={build_ref}"),
-                            "--cache=true".to_string(),
-                            "--cache-ttl=24h".to_string(),
-                        ]),
+                        args: Some(args),
                         env: Some(vec![
                             EnvVar {
                                 name: "GIT_BRANCH".to_string(),
@@ -750,8 +797,10 @@ async fn run_build_job(
                                 ..Default::default()
                             },
                         ]),
+                        volume_mounts: if volume_mounts.is_empty() { None } else { Some(volume_mounts) },
                         ..Default::default()
                     }],
+                    volumes: if volumes.is_empty() { None } else { Some(volumes) },
                     ..Default::default()
                 }),
             },

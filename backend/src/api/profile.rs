@@ -40,13 +40,6 @@ pub async fn get_profile(
     .fetch_optional(&state.db)
     .await?;
 
-    let totp_enabled: bool = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) FROM totp_credentials WHERE user_id = ? AND enabled = 1"#,
-        auth.user_id
-    )
-    .fetch_one(&state.db)
-    .await? > 0;
-
     let subscription = sqlx::query!(
         r#"SELECT s.id, s.status, s.billing_cycle, s.expires_at, s.auto_renew,
                   p.name AS plan_name, p.display_name AS plan_display_name,
@@ -92,7 +85,6 @@ pub async fn get_profile(
             "balance": w.balance,
             "currency": w.currency,
         })),
-        "totp_enabled": totp_enabled,
         "created_at": user.created_at,
     })))
 }

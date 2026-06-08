@@ -42,9 +42,6 @@ pub fn router(state: AppState) -> Router<AppState> {
         // ── Auth (self) ───────────────────────────────────────────────────────
         .route("/auth/me", get(auth::me))
         .route("/auth/logout", post(auth::logout))
-        .route("/auth/totp/setup", post(auth::totp_setup))
-        .route("/auth/totp/verify", post(auth::totp_verify))
-        .route("/auth/totp/disable", post(auth::totp_disable))
 
         // ── Profile (self-service) ────────────────────────────────────────────
         .route("/profile", get(profile::get_profile).put(profile::update_profile))

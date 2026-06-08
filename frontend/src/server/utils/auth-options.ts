@@ -59,7 +59,6 @@ export const authOptions: NextAuthOptions = {
             credentials: {
                 username: { label: "Username", type: "text" },
                 password: { label: "Password", type: "password" },
-                totpToken: { label: "TOTP Token", type: "text" },
             },
             async authorize(credentials) {
                 if (!credentials?.username || !credentials?.password) return null;
@@ -67,7 +66,6 @@ export const authOptions: NextAuthOptions = {
                     const { token, refresh_token, user } = await backendAuthApi.login(
                         credentials.username,
                         credentials.password,
-                        credentials.totpToken || undefined,
                     );
                     return {
                         id: user.id,

@@ -21,7 +21,7 @@ pub async fn list_config(
             .await?;
 
     // Mask sensitive keys
-    let sensitive = ["ldap_bind_password", "ssh_private_key", "jwt_secret"];
+    let sensitive = ["ldap_bind_password", "ssh_private_key", "jwt_secret", "registry_password"];
     let result: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
@@ -67,10 +67,13 @@ const ALLOWED_KEYS: &[&str] = &[
     // Registry
     "registry_host",
     "registry_url",
+    "registry_username",
+    "registry_insecure",
     // Secrets (encrypted)
     "ldap_bind_password",
     "ssh_private_key",
     "jwt_secret",
+    "registry_password",
 ];
 
 pub async fn set_config(
@@ -102,7 +105,7 @@ pub async fn set_config(
     }
 
     // Encrypt sensitive fields before storage
-    let sensitive = ["ldap_bind_password", "ssh_private_key", "jwt_secret"];
+    let sensitive = ["ldap_bind_password", "ssh_private_key", "jwt_secret", "registry_password"];
     let stored_value = if sensitive.contains(&body.key.as_str()) {
         state.crypto.encrypt(&body.value)?
     } else {

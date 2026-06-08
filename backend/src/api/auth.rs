@@ -1,7 +1,6 @@
 use axum::{extract::State, response::IntoResponse, Extension, Json};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
-use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
 use crate::{
@@ -17,7 +16,6 @@ use crate::{
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
-    pub totp_code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -107,36 +105,6 @@ pub async fn login(
         return Err(AppError::Forbidden("EMAIL_NOT_VERIFIED".into()));
     }
 
-    // TOTP verification (if enabled)
-    let totp_row = sqlx::query!(
-        r#"SELECT secret, enabled FROM totp_credentials WHERE user_id = ?"#,
-        user_id
-    )
-    .fetch_optional(&state.db)
-    .await?;
-
-    if let Some(totp) = totp_row.filter(|t| t.enabled != 0) {
-        let code = body
-            .totp_code
-            .as_deref()
-            .ok_or_else(|| AppError::Unauthorized("TOTP_REQUIRED".into()))?;
-
-        let secret_plain = state.crypto.decrypt(&totp.secret)?;
-        let totp_instance = TOTP::new(
-            Algorithm::SHA1,
-            6,
-            1,
-            30,
-            Secret::Raw(secret_plain.into_bytes()).to_bytes().unwrap(),
-            None,
-            "".to_string(),
-        )
-        .map_err(|e| AppError::Crypto(e.to_string()))?;
-
-        if !totp_instance.check_current(code).unwrap_or(false) {
-            return Err(AppError::Unauthorized("TOTP_INVALID".into()));
-        }
-    }
 
     let tokens = issue_session(&state, &user_id, &addr, &headers).await?;
 
@@ -715,111 +683,6 @@ pub async fn logout(
             .execute(&state.db)
             .await;
     }
-    Ok(axum::http::StatusCode::NO_CONTENT)
-}
-
-// ─── TOTP Setup ───────────────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-pub struct TotpSetupResponse {
-    pub secret: String,
-    pub qr_url: String,
-}
-
-pub async fn totp_setup(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
-) -> AppResult<impl IntoResponse> {
-    let secret = totp_rs::Secret::generate_secret();
-    let secret_str = secret.to_encoded().to_string();
-
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        secret.to_bytes().unwrap(),
-        Some("QuickStack".to_string()),
-        auth.username.clone(),
-    )
-    .map_err(|e| AppError::Crypto(e.to_string()))?;
-
-    let qr_url = totp.get_url();
-    let encrypted = state.crypto.encrypt(&secret_str)?;
-
-    sqlx::query!(
-        r#"INSERT INTO totp_credentials (user_id, secret, enabled)
-           VALUES (?, ?, 0)
-           ON DUPLICATE KEY UPDATE secret = ?, enabled = 0"#,
-        auth.user_id,
-        encrypted,
-        encrypted,
-    )
-    .execute(&state.db)
-    .await?;
-
-    Ok(Json(TotpSetupResponse {
-        secret: secret_str,
-        qr_url,
-    }))
-}
-
-#[derive(Deserialize)]
-pub struct TotpVerifyRequest {
-    pub code: String,
-}
-
-pub async fn totp_verify(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
-    Json(body): Json<TotpVerifyRequest>,
-) -> AppResult<impl IntoResponse> {
-    let row = sqlx::query!(
-        r#"SELECT secret FROM totp_credentials WHERE user_id = ? AND enabled = 0"#,
-        auth.user_id
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::BadRequest("no pending TOTP setup".into()))?;
-
-    let secret_plain = state.crypto.decrypt(&row.secret)?;
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        totp_rs::Secret::Raw(secret_plain.into_bytes())
-            .to_bytes()
-            .unwrap(),
-        None,
-        "".to_string(),
-    )
-    .map_err(|e| AppError::Crypto(e.to_string()))?;
-
-    if !totp.check_current(&body.code).unwrap_or(false) {
-        return Err(AppError::BadRequest("invalid TOTP code".into()));
-    }
-
-    sqlx::query!(
-        r#"UPDATE totp_credentials SET enabled = 1 WHERE user_id = ?"#,
-        auth.user_id
-    )
-    .execute(&state.db)
-    .await?;
-
-    Ok(axum::http::StatusCode::NO_CONTENT)
-}
-
-pub async fn totp_disable(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthUser>,
-) -> AppResult<impl IntoResponse> {
-    sqlx::query!(
-        r#"DELETE FROM totp_credentials WHERE user_id = ?"#,
-        auth.user_id
-    )
-    .execute(&state.db)
-    .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
