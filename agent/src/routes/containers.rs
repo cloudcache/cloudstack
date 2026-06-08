@@ -64,6 +64,17 @@ pub async fn remove(
         })
 }
 
+/// GET /containers/:id/inspect — terminal state + exit code (for build completion).
+pub async fn inspect(
+    State(state): State<AgentState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::types::InspectResponse>, (axum::http::StatusCode, String)> {
+    crate::docker_ops::inspect_container(&state.docker, &id)
+        .await
+        .map(Json)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
 /// GET /containers — list all running qs-* containers.
 pub async fn list(
     State(state): State<AgentState>,

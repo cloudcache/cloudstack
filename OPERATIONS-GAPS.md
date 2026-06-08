@@ -153,6 +153,39 @@ Legend: `[ ]` open · `[x]` done · `[~]` needs product decision (do not auto-fi
   success. Restructured to explicit `match insert { Ok => commit, Err => race-recover else propagate }`.
   Verified green with a single foreground build.
 
+## Docker backend parity (iter 9)
+
+Closing K3S↔Docker asymmetries found in the lifecycle trace (all backend-only — the qs-agent already
+honors the relevant `RunContainerRequest` fields).
+
+- [x] **`/etc/hosts` mount.** `docker/deployment.rs` now mounts `/etc/hosts` read-only when
+  `mount_etc_hosts` is set (added the column to the deploy SELECT/`AppRow`). K3S already did this.
+- [x] **Platform image registries.** `deploy_app` now falls back to the `image_registries` row linked
+  via `image_registry_id` (app-level creds take precedence) and builds `RegistryAuth` with the
+  registry endpoint — parity with the K3S imagePullSecret synthesis. Previously private pulls from a
+  platform registry failed on Docker.
+- [x] **GPU — verified already implemented (not a gap).** `deploy_app` sets `gpu_count` and the agent
+  applies an nvidia `DeviceRequest` (`agent/src/docker_ops.rs`); scheduler filters GPU nodes.
+- [x] **Anti-affinity — verified already at parity (not a gap).** K3S applies SOFT anti-affinity
+  unconditionally (`pod_spec.rs:229`); the Docker scheduler already prefers distinct nodes.
+- [x] **Scale-up incremental (no redeploy).** `deploy_app` body extracted into `deploy_app_inner(add:
+  Option<(start_idx, count)>)`: `None` = full redeploy (delete + create `replicas` from 0, unchanged);
+  `Some((start,count))` = create only the delta, numbered after existing containers, **without
+  deleting/recreating running ones**. `scale_deployment` scale-up now calls it with
+  `(current, replicas-current)` — existing replicas stay up (no downtime), parity with K3S in-place
+  replica patch. Scheduler picks the least-loaded nodes for the delta (existing containers counted).
+- [x] **Builds (GIT source) on Docker.** Implemented per `docs/DESIGN-docker-builds.md` (all phases incl.
+  Decision-1=B agent endpoint): `builds.rs` is orchestrator-aware (`run_build_dispatch`); Docker builds
+  run **kaniko as a container via the agent** (`run_build_container`), completion polled via a new agent
+  `GET /containers/:id/inspect` (exit code), logs proxied from the build container, cancel = stop+remove.
+  Registry push auth via optional `config.json` file-mount (+ `registry_insecure` flag); private-repo
+  git auth via `GIT_USERNAME`/`GIT_PASSWORD`. Migration `028` adds `build_jobs.node_id`/`container_id`.
+  Also fixed the latent image-ref bug in **both** backends: builds now push to the deploy-pulled
+  `{registry}/{app}:latest` (+ `:build-{id}`). Agent + backend compile clean.
+  Note: agent change (inspect endpoint) requires redistributing the qs-agent binary + re-provisioning
+  Docker nodes before Docker builds work end-to-end.
+- [ ] **Cordon/drain has no Docker equivalent.** OPEN.
+
 ### Dropped after verification (NOT bugs)
 - Subscription renewal "loop not transactional": each `renew_one` is independently atomic and the due
   query is idempotent; a crash just defers remaining renewals to the next cycle. Correct as-is.

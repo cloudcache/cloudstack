@@ -259,6 +259,26 @@ pub async fn run_container(
     })
 }
 
+pub async fn inspect_container(
+    docker: &Docker,
+    container_id: &str,
+) -> anyhow::Result<crate::types::InspectResponse> {
+    let info = docker.inspect_container(container_id, None).await?;
+    let state = info.state.unwrap_or_default();
+    let status = state
+        .status
+        .map(|s| s.as_ref().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let exited = status == "exited" || status == "dead";
+    Ok(crate::types::InspectResponse {
+        state: status,
+        exited,
+        exit_code: state.exit_code.unwrap_or(0),
+        oom_killed: state.oom_killed.unwrap_or(false),
+        error: state.error.filter(|e| !e.is_empty()),
+    })
+}
+
 pub async fn stop_container(docker: &Docker, container_id: &str) -> anyhow::Result<()> {
     docker
         .stop_container(

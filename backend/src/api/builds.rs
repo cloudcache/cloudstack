@@ -157,14 +157,15 @@ pub async fn trigger_build(
     .execute(&state.db)
     .await?;
 
-    // Spawn background task to run the K8s build Job
+    // Spawn background task to run the build (K8s Job or Docker container).
     let state2 = state.clone();
     let app_id2 = app_id.clone();
     let build_id2 = build_id.clone();
     let job_name2 = job_name.clone();
+    let branch2 = branch.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_build_job(&state2, &app_id2, &build_id2, &job_name2, &branch).await {
-            tracing::error!("build job {build_id2} failed to start: {e}");
+        if let Err(e) = run_build_dispatch(&state2, &app_id2, &build_id2, &job_name2, &branch2).await {
+            tracing::error!("build {build_id2} failed to start: {e}");
             let _ = sqlx::query!(
                 r#"UPDATE build_jobs SET status = 'FAILED', finished_at = NOW() WHERE id = ?"#,
                 build_id2
@@ -191,10 +192,17 @@ pub async fn cancel_build(
 ) -> AppResult<impl IntoResponse> {
     super::projects::check_project_access(&state, &auth, &project_id, "OPERATOR").await?;
 
-    let build = sqlx::query!(
-        r#"SELECT status, k8s_job_name FROM build_jobs WHERE id = ?"#,
-        build_id
+    #[derive(sqlx::FromRow)]
+    struct CancelRow {
+        status: String,
+        k8s_job_name: Option<String>,
+        node_id: Option<String>,
+        container_id: Option<String>,
+    }
+    let build: CancelRow = sqlx::query_as(
+        "SELECT status, k8s_job_name, node_id, container_id FROM build_jobs WHERE id = ?",
     )
+    .bind(&build_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("build {build_id}")))?;
@@ -212,24 +220,58 @@ pub async fn cancel_build(
     .execute(&state.db)
     .await?;
 
-    // Best-effort: delete the K8s Job
-    if let Some(job_name) = build.k8s_job_name {
-        let app_row = sqlx::query!(
-            r#"SELECT a.pool_id, p.name AS namespace
-               FROM build_jobs bj
-               JOIN apps a ON a.id = bj.app_id
-               JOIN projects p ON p.id = a.project_id
-               WHERE bj.id = ?"#,
-            build_id
-        )
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
+    // Best-effort: tear down the in-flight build (K8s Job or Docker container).
+    #[derive(sqlx::FromRow)]
+    struct AppRow {
+        pool_id: Option<String>,
+        namespace: String,
+    }
+    let app_row: Option<AppRow> = sqlx::query_as(
+        "SELECT a.pool_id, p.name AS namespace \
+         FROM build_jobs bj \
+         JOIN apps a ON a.id = bj.app_id \
+         JOIN projects p ON p.id = a.project_id \
+         WHERE bj.id = ?",
+    )
+    .bind(&build_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
 
-        if let Some(row) = app_row {
-            if let Some(pool_id) = row.pool_id {
-                if let Ok(cluster_id) = resolve_cluster(&state, &pool_id).await {
+    if let Some(row) = app_row {
+        if let Some(pool_id) = row.pool_id {
+            if let Ok(cluster_id) = resolve_cluster(&state, &pool_id).await {
+                let orch = cluster_orchestrator(&state, &cluster_id)
+                    .await
+                    .unwrap_or_else(|_| "K3S".to_string());
+                if orch == "DOCKER" {
+                    #[derive(sqlx::FromRow)]
+                    struct NodeAddr {
+                        ip_address: String,
+                        agent_port: u16,
+                    }
+                    if let (Some(node_id), Some(cid)) = (build.node_id, build.container_id) {
+                        if let Ok(Some(node)) = sqlx::query_as::<_, NodeAddr>(
+                            "SELECT ip_address, agent_port FROM cluster_nodes WHERE id = ?",
+                        )
+                        .bind(&node_id)
+                        .fetch_optional(&state.db)
+                        .await
+                        {
+                            let agent_token =
+                                crate::docker::deployment::load_agent_token(&state.db).await;
+                            let agent =
+                                crate::docker::agent_client::AgentClient::new(&agent_token);
+                            let _ = agent
+                                .stop_container(&node.ip_address, node.agent_port, &cid)
+                                .await;
+                            let _ = agent
+                                .remove_container(&node.ip_address, node.agent_port, &cid)
+                                .await;
+                        }
+                    }
+                } else if let Some(job_name) = build.k8s_job_name {
                     let _ = delete_k8s_job(&state, &cluster_id, &row.namespace, &job_name).await;
                 }
             }
@@ -246,18 +288,27 @@ pub async fn build_logs(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path((project_id, _app_id, build_id)): Path<(String, String, String)>,
-) -> AppResult<impl IntoResponse> {
+) -> AppResult<axum::response::Response> {
     super::projects::check_project_access(&state, &auth, &project_id, "OBSERVER").await?;
 
-    let build = sqlx::query!(
-        r#"SELECT bj.k8s_job_name, bj.status,
-                  a.pool_id, p.name AS namespace
-           FROM build_jobs bj
-           JOIN apps a ON a.id = bj.app_id
-           JOIN projects p ON p.id = a.project_id
-           WHERE bj.id = ?"#,
-        build_id
+    #[derive(sqlx::FromRow)]
+    struct BuildLogRow {
+        k8s_job_name: Option<String>,
+        status: String,
+        node_id: Option<String>,
+        container_id: Option<String>,
+        pool_id: Option<String>,
+        namespace: String,
+    }
+    let build: BuildLogRow = sqlx::query_as(
+        "SELECT bj.k8s_job_name, bj.status, bj.node_id, bj.container_id, \
+                a.pool_id, p.name AS namespace \
+         FROM build_jobs bj \
+         JOIN apps a ON a.id = bj.app_id \
+         JOIN projects p ON p.id = a.project_id \
+         WHERE bj.id = ?",
     )
+    .bind(&build_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("build {build_id}")))?;
@@ -266,6 +317,65 @@ pub async fn build_logs(
         .ok_or_else(|| AppError::BadRequest("app has no pool assigned".into()))?;
     let cluster_id = resolve_cluster(&state, &pool_id).await?;
 
+    // ── Docker: proxy the build container's logs from its node's agent ────────
+    if cluster_orchestrator(&state, &cluster_id).await? == "DOCKER" {
+        let container_id = build
+            .container_id
+            .ok_or_else(|| AppError::NotFound("build container not started yet".into()))?;
+        let node_id = build
+            .node_id
+            .ok_or_else(|| AppError::BadRequest("build has no node assigned".into()))?;
+        #[derive(sqlx::FromRow)]
+        struct NodeAddr {
+            ip_address: String,
+            agent_port: u16,
+        }
+        let node: NodeAddr = sqlx::query_as(
+            "SELECT ip_address, agent_port FROM cluster_nodes WHERE id = ?",
+        )
+        .bind(&node_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("build node not found".into()))?;
+
+        let agent_token = crate::docker::deployment::load_agent_token(&state.db).await;
+        let url = format!(
+            "http://{}:{}/containers/{}/logs?tail=500&follow=true",
+            node.ip_address, node.agent_port, container_id
+        );
+        let resp = reqwest::Client::new()
+            .get(&url)
+            .bearer_auth(&agent_token)
+            .send()
+            .await
+            .map_err(|e| AppError::Docker(format!("build log stream: {e}")))?;
+        let byte_stream = resp.bytes_stream();
+
+        use async_stream::stream;
+        use axum::response::sse::Event;
+        use futures::StreamExt;
+        let sse_stream = stream! {
+            futures::pin_mut!(byte_stream);
+            while let Some(chunk) = byte_stream.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        for line in text.lines() {
+                            if let Some(data) = line.strip_prefix("data:") {
+                                yield Ok::<_, std::convert::Infallible>(
+                                    Event::default().data(data.trim()),
+                                );
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        };
+        return Ok(Sse::new(sse_stream).into_response());
+    }
+
+    // ── K8s: stream from the build pod ────────────────────────────────────────
     let job_name = build.k8s_job_name
         .ok_or_else(|| AppError::BadRequest("build has no K8s job name".into()))?;
 
@@ -310,7 +420,7 @@ pub async fn build_logs(
         }
     };
 
-    Ok(Sse::new(sse_stream))
+    Ok(Sse::new(sse_stream).into_response())
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -323,6 +433,235 @@ async fn resolve_cluster(state: &AppState, pool_id: &str) -> AppResult<String> {
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::BadRequest(format!("no active cluster in pool {pool_id}")))
+}
+
+async fn cluster_orchestrator(state: &AppState, cluster_id: &str) -> AppResult<String> {
+    Ok(sqlx::query_scalar::<_, String>(
+        "SELECT orchestrator FROM clusters WHERE id = ?",
+    )
+    .bind(cluster_id)
+    .fetch_optional(&state.db)
+    .await?
+    .unwrap_or_else(|| "K3S".to_string()))
+}
+
+async fn load_cfg(state: &AppState, key: &str) -> String {
+    sqlx::query_scalar::<_, String>("SELECT `value` FROM platform_config WHERE `key` = ?")
+        .bind(key)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// Resolve the app's cluster + orchestrator and run the build on the right backend.
+async fn run_build_dispatch(
+    state: &AppState,
+    app_id: &str,
+    build_id: &str,
+    job_name: &str,
+    branch: &str,
+) -> AppResult<()> {
+    let pool_id = sqlx::query_scalar::<_, Option<String>>("SELECT pool_id FROM apps WHERE id = ?")
+        .bind(app_id)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten()
+        .ok_or_else(|| AppError::BadRequest("app has no pool assigned".into()))?;
+    let cluster_id = resolve_cluster(state, &pool_id).await?;
+
+    if cluster_orchestrator(state, &cluster_id).await? == "DOCKER" {
+        run_build_container(state, app_id, build_id, &cluster_id, branch).await
+    } else {
+        run_build_job(state, app_id, build_id, job_name, branch).await
+    }
+}
+
+// ─── Internal: run the build as a kaniko container on a Docker node ───────────
+
+/// Build a docker `config.json` auth blob for the push registry, or None when
+/// no registry credentials are configured (anonymous push).
+async fn build_registry_config_json(state: &AppState, registry: &str) -> Option<String> {
+    let user = load_cfg(state, "registry_username").await;
+    let pass_raw = load_cfg(state, "registry_password").await;
+    if registry.is_empty() || user.is_empty() || pass_raw.is_empty() {
+        return None;
+    }
+    // Password may be stored encrypted; fall back to the raw value otherwise.
+    let pass = state.crypto.decrypt(&pass_raw).unwrap_or(pass_raw);
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    let auth = B64.encode(format!("{user}:{pass}"));
+    Some(serde_json::json!({ "auths": { registry: { "auth": auth } } }).to_string())
+}
+
+async fn run_build_container(
+    state: &AppState,
+    app_id: &str,
+    build_id: &str,
+    cluster_id: &str,
+    branch: &str,
+) -> AppResult<()> {
+    use crate::docker::agent_client::{AgentClient, FileMount, RunContainerRequest};
+
+    #[derive(sqlx::FromRow)]
+    struct BuildApp {
+        app_name: String,
+        git_url: Option<String>,
+        git_token: Option<String>,
+    }
+    let app: BuildApp = sqlx::query_as(
+        "SELECT name AS app_name, git_url, git_token FROM apps WHERE id = ?",
+    )
+    .bind(app_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("app {app_id}")))?;
+
+    let git_url = app
+        .git_url
+        .ok_or_else(|| AppError::BadRequest("app has no git_url".into()))?;
+
+    // Destinations: push to the ref the deploy path pulls (:latest) + a build tag.
+    let registry = load_cfg(state, "registry_host").await;
+    let latest_ref = format!("{}/{}:latest", registry, app.app_name);
+    let build_ref = format!("{}/{}:build-{}", registry, app.app_name, &build_id[..8]);
+    let insecure = load_cfg(state, "registry_insecure").await == "1";
+
+    let mut args = vec![
+        format!("--context=git://{git_url}#refs/heads/{branch}"),
+        format!("--destination={latest_ref}"),
+        format!("--destination={build_ref}"),
+        "--cache=true".to_string(),
+        "--cache-ttl=24h".to_string(),
+    ];
+    if insecure {
+        args.push("--insecure".to_string());
+        args.push("--skip-tls-verify".to_string());
+    }
+
+    // Optional registry auth for the push, mounted where kaniko expects it.
+    let mut file_mounts: Vec<FileMount> = Vec::new();
+    if let Some(content) = build_registry_config_json(state, &registry).await {
+        file_mounts.push(FileMount {
+            filename: "config.json".to_string(),
+            mount_path: "/kaniko/.docker/config.json".to_string(),
+            content,
+        });
+    }
+
+    // Git auth for private repos (kaniko reads GIT_USERNAME / GIT_PASSWORD).
+    let mut env: Vec<(String, String)> = Vec::new();
+    if let Some(tok) = app.git_token {
+        if !tok.is_empty() {
+            let token = state.crypto.decrypt(&tok).unwrap_or(tok);
+            env.push(("GIT_USERNAME".to_string(), "oauth2".to_string()));
+            env.push(("GIT_PASSWORD".to_string(), token));
+        }
+    }
+
+    // One node, small resource caps so builds don't starve app workloads.
+    let targets =
+        crate::docker::scheduler::pick_nodes(state, cluster_id, 1, Some(2000), Some(4096), false, 0)
+            .await?;
+    let target = targets
+        .first()
+        .ok_or_else(|| AppError::BadRequest("no eligible Docker node for build".into()))?;
+
+    let agent_token = crate::docker::deployment::load_agent_token(&state.db).await;
+    let agent = AgentClient::new(&agent_token);
+    let container_name = format!("qs-build-{}", &build_id[..8]);
+
+    let req = RunContainerRequest {
+        container_name,
+        image: "gcr.io/kaniko-project/executor:latest".to_string(),
+        command: None,
+        args: Some(args),
+        working_dir: None,
+        env,
+        cpu_limit_mcores: Some(2000),
+        mem_limit_mb: Some(4096),
+        gpu_count: 0,
+        network_name: None,
+        ip_address: None,
+        extra_networks: Vec::new(),
+        port_bindings: Vec::new(),
+        volumes: Vec::new(),
+        file_mounts,
+        health_check: None,
+        restart_policy: "no".to_string(),
+        user: None,
+        privileged: false,
+        read_only_rootfs: false,
+        registry_auth: None,
+    };
+
+    let resp = agent
+        .run_container(&target.ip_address, target.agent_port, &req)
+        .await?;
+
+    sqlx::query(
+        "UPDATE build_jobs \
+         SET status = 'RUNNING', image_tag = ?, node_id = ?, container_id = ?, started_at = NOW() \
+         WHERE id = ?",
+    )
+    .bind(&latest_ref)
+    .bind(&target.node_id)
+    .bind(&resp.container_id)
+    .bind(build_id)
+    .execute(&state.db)
+    .await?;
+
+    let state2 = state.clone();
+    let build_id2 = build_id.to_string();
+    let ip = target.ip_address.clone();
+    let port = target.agent_port;
+    let cid = resp.container_id.clone();
+    tokio::spawn(async move {
+        watch_build_completion_docker(&state2, &ip, port, &cid, &build_id2).await;
+    });
+
+    Ok(())
+}
+
+async fn watch_build_completion_docker(
+    state: &AppState,
+    node_ip: &str,
+    agent_port: u16,
+    container_id: &str,
+    build_id: &str,
+) {
+    use crate::docker::agent_client::AgentClient;
+    use tokio::time::{sleep, Duration};
+
+    let agent_token = crate::docker::deployment::load_agent_token(&state.db).await;
+    let agent = AgentClient::new(&agent_token);
+
+    // Poll up to 60 minutes (240 × 15s).
+    let mut final_status: Option<&str> = None;
+    for _ in 0..240 {
+        sleep(Duration::from_secs(15)).await;
+        match agent.inspect(node_ip, agent_port, container_id).await {
+            Ok(info) if info.exited => {
+                final_status = Some(if info.exit_code == 0 { "SUCCEEDED" } else { "FAILED" });
+                break;
+            }
+            Ok(_) => {} // still running
+            Err(e) => {
+                tracing::warn!(build_id, "build inspect error: {e}");
+            }
+        }
+    }
+    let status = final_status.unwrap_or("FAILED");
+
+    let _ = sqlx::query("UPDATE build_jobs SET status = ?, finished_at = NOW() WHERE id = ?")
+        .bind(status)
+        .bind(build_id)
+        .execute(&state.db)
+        .await;
+
+    // Best-effort cleanup of the (now-exited) build container.
+    let _ = agent.remove_container(node_ip, agent_port, container_id).await;
 }
 
 // ─── Internal: run the build Job in K8s ──────────────────────────────────────
@@ -340,14 +679,20 @@ async fn run_build_job(
     use kube::{Api, api::PostParams};
     use std::collections::BTreeMap;
 
-    let app = sqlx::query!(
-        r#"SELECT a.git_url, a.container_image, a.pool_id,
-                  p.name AS namespace
-           FROM apps a
-           JOIN projects p ON p.id = a.project_id
-           WHERE a.id = ?"#,
-        app_id
+    #[derive(sqlx::FromRow)]
+    struct BuildJobApp {
+        app_name: String,
+        git_url: Option<String>,
+        pool_id: Option<String>,
+        namespace: String,
+    }
+    let app: BuildJobApp = sqlx::query_as(
+        "SELECT a.name AS app_name, a.git_url, a.pool_id, p.name AS namespace \
+         FROM apps a \
+         JOIN projects p ON p.id = a.project_id \
+         WHERE a.id = ?",
     )
+    .bind(app_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("app {app_id}")))?;
@@ -361,11 +706,11 @@ async fn run_build_job(
     let git_url = app.git_url
         .ok_or_else(|| AppError::BadRequest("app has no git_url".into()))?;
 
-    let image_tag = format!(
-        "{}:build-{}",
-        app.container_image.unwrap_or_else(|| format!("localhost/qs/{app_id}")),
-        &build_id[..8]
-    );
+    // Push to the ref the deploy path pulls (:latest) + a build tag, so a GIT
+    // deploy actually finds the produced image (parity with the Docker builder).
+    let registry = load_cfg(state, "registry_host").await;
+    let image_tag = format!("{}/{}:latest", registry, app.app_name);
+    let build_ref = format!("{}/{}:build-{}", registry, app.app_name, &build_id[..8]);
 
     let mut labels = BTreeMap::new();
     labels.insert("qs-build-id".to_string(), build_id[..8].to_string());
@@ -394,6 +739,7 @@ async fn run_build_job(
                         args: Some(vec![
                             format!("--context=git://{git_url}#refs/heads/{branch}"),
                             format!("--destination={image_tag}"),
+                            format!("--destination={build_ref}"),
                             "--cache=true".to_string(),
                             "--cache-ttl=24h".to_string(),
                         ]),

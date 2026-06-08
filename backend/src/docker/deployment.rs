@@ -26,6 +26,7 @@ struct AppRow {
     container_image: Option<String>,
     container_registry_user: Option<String>,
     container_registry_pass: Option<String>,
+    image_registry_id: Option<String>,
     container_command: Option<String>,
     container_args: Option<serde_json::Value>,
     working_dir: Option<String>,
@@ -38,6 +39,7 @@ struct AppRow {
     gpu_count: Option<i32>,
     timezone: Option<String>,
     mount_ldap_files: i8,
+    mount_etc_hosts: i8,
     mount_user_home: i8,
     mount_app_data: i8,
     mount_app_logs: i8,
@@ -108,7 +110,7 @@ struct PoolInfo {
 }
 
 /// Load agent_token from platform_config (non-macro).
-async fn load_agent_token(db: &sqlx::MySqlPool) -> String {
+pub(crate) async fn load_agent_token(db: &sqlx::MySqlPool) -> String {
     sqlx::query_scalar::<_, String>("SELECT `value` FROM platform_config WHERE `key` = 'agent_token'")
         .fetch_optional(db)
         .await
@@ -135,15 +137,32 @@ pub async fn deploy_app(
     app_id: &str,
     _triggered_by: &str,
 ) -> AppResult<()> {
+    // Full (re)deploy: replace all containers with `replicas` fresh ones.
+    deploy_app_inner(state, cluster_id, project_id, app_id, None).await
+}
+
+/// Core deploy routine.
+/// - `add = None` → full redeploy: delete existing containers and create
+///   `app.replicas` of them from index 0.
+/// - `add = Some((start_idx, count))` → incremental scale-up: create `count`
+///   more containers numbered from `start_idx`, leaving existing ones running.
+async fn deploy_app_inner(
+    state: &AppState,
+    cluster_id: &str,
+    project_id: &str,
+    app_id: &str,
+    add: Option<(usize, u32)>,
+) -> AppResult<()> {
     let app: AppRow = sqlx::query_as(
         r#"SELECT a.name, a.replicas,
                   a.container_image, a.container_registry_user, a.container_registry_pass,
+                  a.image_registry_id,
                   a.container_command, a.container_args, a.working_dir,
                   a.cpu_limit_mcores, a.mem_limit_mb,
                   a.run_as_user,
                   a.privileged, a.read_only_root_fs,
                   a.gpu_enabled, a.gpu_count,
-                  a.timezone, a.mount_ldap_files,
+                  a.timezone, a.mount_ldap_files, a.mount_etc_hosts,
                   a.mount_user_home, a.mount_app_data, a.mount_app_logs,
                   a.health_check_type, a.health_check_path, a.health_check_port,
                   a.health_check_period, a.health_check_timeout, a.health_check_failures,
@@ -258,6 +277,13 @@ pub async fn deploy_app(
             });
         }
     }
+    if app.mount_etc_hosts != 0 {
+        volumes.push(VolumeMount {
+            host_path: "/etc/hosts".to_string(),
+            container_path: "/etc/hosts".to_string(),
+            read_only: true,
+        });
+    }
 
     // ── File mounts ──────────────────────────────────────────────────────────
     let file_mount_rows: Vec<FileMountRow> = sqlx::query_as(
@@ -334,6 +360,34 @@ pub async fn deploy_app(
             password,
             server_address: server,
         })
+    } else if let Some(ref reg_id) = app.image_registry_id {
+        // Fall back to a platform-level registry linked via image_registry_id
+        // (parity with the K3S deployer's imagePullSecret synthesis).
+        #[derive(sqlx::FromRow)]
+        struct Reg {
+            endpoint: String,
+            username: Option<String>,
+            password: Option<String>,
+        }
+        let reg: Option<Reg> = sqlx::query_as(
+            "SELECT endpoint, username, password FROM image_registries \
+             WHERE id = ? AND is_active = 1",
+        )
+        .bind(reg_id)
+        .fetch_optional(&state.db)
+        .await?;
+        match reg {
+            Some(Reg { endpoint, username: Some(u), password: Some(enc_p) })
+                if !u.is_empty() && !enc_p.is_empty() =>
+            {
+                Some(RegistryAuth {
+                    username: u,
+                    password: state.crypto.decrypt(&enc_p)?,
+                    server_address: endpoint,
+                })
+            }
+            _ => None,
+        }
     } else {
         None
     };
@@ -380,10 +434,16 @@ pub async fn deploy_app(
     // ── Schedule nodes ───────────────────────────────────────────────────────
     let gpu_needed = app.gpu_enabled != 0;
     let gpu_count = app.gpu_count.unwrap_or(0) as u8;
+    // Full redeploy schedules `replicas` nodes numbered from 0; incremental add
+    // schedules only the delta and numbers them after the existing containers.
+    let (start_idx, count) = match add {
+        None => (0usize, app.replicas as u32),
+        Some((s, c)) => (s, c),
+    };
     let targets = super::scheduler::pick_nodes(
         state,
         cluster_id,
-        app.replicas as u32,
+        count,
         app.cpu_limit_mcores.map(|v| v as u32),
         app.mem_limit_mb.map(|v| v as u32),
         gpu_needed,
@@ -391,13 +451,16 @@ pub async fn deploy_app(
     )
     .await?;
 
-    // ── Remove existing containers (redeploy) ────────────────────────────────
-    delete_app_containers(state, &agent, app_id).await?;
+    // Full deploy replaces all existing containers; scale-up keeps them running.
+    if add.is_none() {
+        delete_app_containers(state, &agent, app_id).await?;
+    }
 
     let user = app.run_as_user.map(|u| u.to_string());
 
     // ── Create containers ────────────────────────────────────────────────────
-    for (idx, target) in targets.iter().enumerate() {
+    for (i, target) in targets.iter().enumerate() {
+        let idx = start_idx + i;
         let container_name = format!("qs-{}-{}", app.name, idx);
 
         // Ensure Docker networks exist on this node
@@ -611,7 +674,8 @@ pub async fn scale_deployment(
                 .await?;
         }
     } else if replicas > current {
-        // Scale up — redeploy with the new replica count (already set in DB by caller)
+        // Scale up — add only the new containers; leave existing ones running
+        // (no full redeploy, so no downtime for current replicas).
         let project_id: String = sqlx::query_scalar::<_, String>(
             "SELECT project_id FROM apps WHERE id = ?",
         )
@@ -619,7 +683,15 @@ pub async fn scale_deployment(
         .fetch_one(&state.db)
         .await?;
 
-        deploy_app(state, cluster_id, &project_id, app_id, "scale-up").await?;
+        let delta = (replicas - current) as u32;
+        deploy_app_inner(
+            state,
+            cluster_id,
+            &project_id,
+            app_id,
+            Some((current as usize, delta)),
+        )
+        .await?;
     }
 
     Ok(())

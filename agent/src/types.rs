@@ -152,3 +152,17 @@ pub struct ContainerInfo {
     pub status: String,
     pub created: i64,
 }
+
+/// Result of inspecting a container — used to determine build completion.
+#[derive(Debug, Serialize)]
+pub struct InspectResponse {
+    /// "running", "exited", "created", "paused", "dead", etc.
+    pub state: String,
+    /// true once the container has reached a terminal "exited" state.
+    pub exited: bool,
+    /// Exit code (meaningful only when `exited`).
+    pub exit_code: i64,
+    pub oom_killed: bool,
+    /// Docker's error string, if any.
+    pub error: Option<String>,
+}

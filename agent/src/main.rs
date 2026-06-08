@@ -79,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/containers/:id/stop", post(routes::containers::stop))
         .route("/containers/:id", delete(routes::containers::remove))
         .route("/containers/:id/logs", get(routes::containers::logs))
+        .route("/containers/:id/inspect", get(routes::containers::inspect))
         .route("/containers/:id/exec", get(routes::containers::exec_ws))
         .route("/containers", get(routes::containers::list))
         // Network management

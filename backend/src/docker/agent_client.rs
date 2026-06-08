@@ -128,6 +128,34 @@ impl AgentClient {
         Ok(())
     }
 
+    /// GET /containers/{id}/inspect — terminal state + exit code (build completion).
+    pub async fn inspect(
+        &self,
+        node_ip: &str,
+        agent_port: u16,
+        container_id: &str,
+    ) -> AppResult<InspectResponse> {
+        let resp = self
+            .http
+            .get(Self::url(
+                node_ip,
+                agent_port,
+                &format!("/containers/{container_id}/inspect"),
+            ))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| AppError::Docker(format!("agent {node_ip} inspect: {e}")))?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Docker(format!("inspect failed: {body}")));
+        }
+        resp.json()
+            .await
+            .map_err(|e| AppError::Docker(format!("parse inspect: {e}")))
+    }
+
     /// GET /status — check if agent is alive
     pub async fn health(&self, node_ip: &str, agent_port: u16) -> AppResult<AgentStatus> {
         let resp = self
@@ -237,6 +265,15 @@ pub struct EnsureNetworkRequest {
 pub struct RunContainerResponse {
     pub container_id: String,
     pub container_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InspectResponse {
+    pub state: String,
+    pub exited: bool,
+    pub exit_code: i64,
+    pub oom_killed: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

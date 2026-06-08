@@ -67,11 +67,19 @@ deploy (`resolve_cluster_for_app`, least-loaded active cluster in pool); `webhoo
 proxied from agent (`/containers/:id/logs`, WS terminal).
 
 **Divergence / gaps (Docker is the secondary backend):**
-- **Scale-up does a full `deploy_app` redeploy** (verified `docker/deployment.rs:53`) — tears down &
-  recreates all containers instead of adding N.
-- Docker **missing**: `/etc/hosts` mount; platform `image_registries` (`image_registry_id`); pod
-  anti-affinity; actual GPU device mount (scheduler checks capacity but run request mounts no device).
-- **Builds are K8s-Job only** (verified `builds.rs:4,337`) — Docker clusters can't build from GIT source.
+- ~~Scale-up does a full `deploy_app` redeploy~~ — FIXED: `deploy_app_inner(add)` adds only the delta
+  on scale-up (existing containers stay running; no downtime), full redeploy path unchanged.
+- ~~Docker missing `/etc/hosts` mount~~ — FIXED: mounted read-only when `mount_etc_hosts`.
+- ~~Docker missing platform `image_registries` (`image_registry_id`)~~ — FIXED: `deploy_app` now falls
+  back to the linked `image_registries` row and builds `RegistryAuth` (parity with K3S pull-secret).
+- GPU — NOT a gap: `deploy_app` already sets `gpu_count` and the agent applies an nvidia `DeviceRequest`
+  (`agent/src/docker_ops.rs`); scheduler filters GPU-capable nodes.
+- Anti-affinity — NOT a gap: K3S applies it unconditionally and SOFT (`preferred_during_scheduling`,
+  `pod_spec.rs:229`); the Docker scheduler already prefers distinct nodes (cycles back only when nodes
+  run short) — equivalent behavior.
+- ~~Builds are K8s-Job only~~ — FIXED: `builds.rs` is orchestrator-aware; Docker builds run kaniko as a
+  container via the agent (completion via new agent inspect endpoint). See `docs/DESIGN-docker-builds.md`.
+- **Cordon/drain** — no Docker equivalent. STILL OPEN.
 - Cross-calls: Docker reuses `k8s::deployment::allocate_nodeport` and `k8s::network::*` (nodeport + IPAM
   shared across orchestrators).
 
@@ -138,12 +146,13 @@ POSTGRES/MYSQL/…) whose host is `…svc.cluster.local` — **K3S-only** (depen
 | Capability | K3S | Docker |
 |---|---|---|
 | Deploy primitive | Deployment+Service+NetworkPolicy+ConfigMap | agent `run_container` + `docker_containers` |
-| Scale up | kube patch replicas | **full redeploy** |
+| Scale up | kube patch replicas | incremental add (delta only, no redeploy) |
 | Cordon/drain | yes | **no** |
 | Builds (GIT) | K8s Job | **unsupported** |
-| Platform image registries | yes (`image_registry_id`) | **app-level creds only** |
-| Anti-affinity / GPU mount | yes | **no** |
-| tz / /etc/hosts mounts | hostPath mounts | tz via env; **/etc/hosts missing** |
+| Platform image registries | yes (`image_registry_id`) | yes (now falls back to `image_registries`) |
+| GPU | yes | yes (nvidia DeviceRequest via agent) |
+| Anti-affinity | soft (preferred) | soft (scheduler prefers distinct nodes) |
+| tz / /etc/hosts mounts | hostPath mounts | tz via env; /etc/hosts now mounted |
 | DB creds delivery | env + k8s Secret | env only |
 | database-as-app db-credentials | yes (cluster DNS) | **no** |
 | PostgreSQL provisioning | **no (TODO)** | **no (TODO)** |
