@@ -8,14 +8,15 @@ const nextConfig = {
     output: 'standalone',
     outputFileTracingRoot: __dirname,
     typescript: {
-        // Pre-existing type mismatches from Prisma→Rust migration.
-        // TODO: fix incrementally and re-enable.
-        ignoreBuildErrors: true,
+        // Type-checking is enforced again. `tsc --noEmit` is clean — the
+        // remaining `as any` casts paper over Prisma→Rust camel/snake
+        // mismatches; removing a cast must be paired with a real type fix.
+        ignoreBuildErrors: false,
     },
     eslint: {
-        // Pre-existing ESLint warnings (useEffect deps, img elements).
-        // TODO: fix incrementally and re-enable.
-        ignoreDuringBuilds: true,
+        // Enforced again. `next lint` reports 0 errors (53 react-hooks
+        // exhaustive-deps warnings remain — warnings don't fail the build).
+        ignoreDuringBuilds: false,
     },
    /* experimental: {
         instrumentationHook: true
