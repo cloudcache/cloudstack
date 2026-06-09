@@ -23,7 +23,9 @@ const addNodeSchema = z.object({
     cluster_id: z.string().min(1),
     hostname: z.string().min(1),
     ip_address: z.string().min(1),
-    ssh_password: z.string().min(1),
+    // Optional: blank → provision over the platform SSH key (no password).
+    ssh_password: z.string().optional(),
+    ssh_port: z.number().int().min(1).max(65535).optional(),
     node_role: z.string().optional(),
     storage_path: z.string().optional(),
 });
@@ -36,7 +38,8 @@ export const addNode = async (prevState: any, inputData: z.infer<typeof addNodeS
             cluster_id: data.cluster_id,
             hostname: data.hostname,
             ip_address: data.ip_address,
-            ssh_password: data.ssh_password,
+            ssh_password: data.ssh_password || undefined,
+            ssh_port: data.ssh_port,
             node_role: data.node_role || undefined,
             storage_path: data.storage_path || undefined,
         });
@@ -51,7 +54,7 @@ export const deleteNode = async (nodeId: string) =>
         return new SuccessActionResult(undefined, 'Node deleted.');
     });
 
-export const updateNode = async (nodeId: string, body: { hostname?: string; ip_address?: string; node_role?: string; storage_path?: string }) =>
+export const updateNode = async (nodeId: string, body: { hostname?: string; ip_address?: string; node_role?: string; storage_path?: string; ssh_port?: number }) =>
     simpleAction(async () => {
         await getAdminUserSession();
         const token = await getBackendToken();
@@ -63,7 +66,7 @@ export const reprovisionNode = async (nodeId: string, sshPassword: string) =>
     simpleAction(async () => {
         await getAdminUserSession();
         const token = await getBackendToken();
-        await backend.adminNodes.reprovision(token, nodeId, { ssh_password: sshPassword });
+        await backend.adminNodes.reprovision(token, nodeId, { ssh_password: sshPassword || undefined });
         return new SuccessActionResult(undefined, 'Reprovisioning started in background.');
     });
 

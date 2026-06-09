@@ -20,6 +20,7 @@ struct NodeRow {
     mem_capacity_mb: Option<u32>,
     storage_available: i8,
     storage_path: Option<String>,
+    ssh_port: Option<u16>,
     pod_cidr: Option<String>,
     ldap_auth_active: i8,
     last_seen_at: Option<chrono::NaiveDateTime>,
@@ -46,7 +47,7 @@ pub async fn list(
         "SELECT n.id, n.hostname, n.ip_address, n.node_role, n.has_gpu, n.gpu_model, \
                 n.gpu_count, n.node_status, n.provision_error, \
                 n.cpu_capacity_mcores, n.mem_capacity_mb, \
-                n.storage_available, n.storage_path, n.pod_cidr, n.ldap_auth_active, \
+                n.storage_available, n.storage_path, n.ssh_port, n.pod_cidr, n.ldap_auth_active, \
                 n.last_seen_at, n.cluster_id, \
                 c.name AS cluster_name, c.display_name AS cluster_display_name, \
                 c.orchestrator AS cluster_orchestrator, \
@@ -76,6 +77,7 @@ pub async fn list(
         "mem_capacity_mb": r.mem_capacity_mb,
         "storage_available": r.storage_available != 0,
         "storage_path": r.storage_path,
+        "ssh_port": r.ssh_port,
         "pod_cidr": r.pod_cidr,
         "ldap_auth_active": r.ldap_auth_active != 0,
         "last_seen_at": r.last_seen_at,
@@ -146,8 +148,11 @@ pub struct AddNodeRequest {
     pub hostname: String,
     pub ip_address: String,
     pub node_role: Option<String>,
-    /// SSH password for first-time connection
-    pub ssh_password: String,
+    /// SSH password for first-time connection. Omit/empty when the backend can
+    /// already SSH to root@node with the platform key (key-based provisioning).
+    pub ssh_password: Option<String>,
+    /// SSH port (defaults to 22).
+    pub ssh_port: Option<u16>,
     /// Local FS path for hostPath volumes (defaults to /storage)
     pub storage_path: Option<String>,
     /// Agent HTTP port for Docker-mode nodes (defaults to 9800)
@@ -201,12 +206,19 @@ pub async fn add(
         }
     }
     let storage_path = body.storage_path.clone().unwrap_or_else(|| "/storage".to_string());
+    let ssh_port: u16 = body.ssh_port.unwrap_or(22);
 
-    sqlx::query!(
-        r#"INSERT INTO cluster_nodes (id, cluster_id, hostname, ip_address, node_role, storage_path)
-           VALUES (?, ?, ?, ?, ?, ?)"#,
-        id, body.cluster_id, body.hostname, body.ip_address, role, storage_path,
+    sqlx::query(
+        "INSERT INTO cluster_nodes (id, cluster_id, hostname, ip_address, node_role, storage_path, ssh_port) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
+    .bind(&id)
+    .bind(&body.cluster_id)
+    .bind(&body.hostname)
+    .bind(&body.ip_address)
+    .bind(&role)
+    .bind(&storage_path)
+    .bind(ssh_port)
     .execute(&state.db)
     .await?;
 
@@ -216,18 +228,18 @@ pub async fn add(
     let cluster_id = body.cluster_id.clone();
     let ip = body.ip_address.clone();
     let hostname = body.hostname.clone();
-    let ssh_pass = body.ssh_password.clone();
+    let ssh_pass = body.ssh_password.clone().unwrap_or_default();
     let node_id = id.clone();
     let sp = storage_path.clone();
     tokio::spawn(async move {
         let result = std::panic::AssertUnwindSafe(async {
             if orch == "DOCKER" {
                 crate::k8s::node::provision_docker_node(
-                    &state_clone, &node_id, &cluster_id, &ip, &hostname, &ssh_pass, &sp, agent_port,
+                    &state_clone, &node_id, &cluster_id, &ip, &hostname, &ssh_pass, ssh_port, &sp, agent_port,
                 ).await
             } else {
                 crate::k8s::node::provision_node(
-                    &state_clone, &node_id, &cluster_id, &ip, &hostname, &ssh_pass, &role, &sp,
+                    &state_clone, &node_id, &cluster_id, &ip, &hostname, &ssh_pass, ssh_port, &role, &sp,
                 ).await
             }
         });
@@ -324,6 +336,11 @@ pub async fn update_node(
         sqlx::query!("UPDATE cluster_nodes SET storage_path = ? WHERE id = ?", sp, id)
             .execute(&state.db).await?;
     }
+    if let Some(port) = body.ssh_port {
+        sqlx::query("UPDATE cluster_nodes SET ssh_port = ? WHERE id = ?")
+            .bind(port).bind(&id)
+            .execute(&state.db).await?;
+    }
 
     Ok(Json(serde_json::json!({ "id": id, "updated": true })))
 }
@@ -334,6 +351,7 @@ pub struct UpdateNodeRequest {
     pub ip_address: Option<String>,
     pub node_role: Option<String>,
     pub storage_path: Option<String>,
+    pub ssh_port: Option<u16>,
 }
 
 /// POST /admin/nodes/:id/reprovision — retry provisioning for a failed node
@@ -361,6 +379,14 @@ pub async fn reprovision(
         .ok_or_else(|| AppError::Internal("node has no cluster_id".into()))?;
     let role = node.node_role.clone();
     let storage_path = node.storage_path.clone().unwrap_or_else(|| "/storage".to_string());
+    let ssh_port: u16 = sqlx::query_scalar::<_, Option<u16>>(
+        "SELECT ssh_port FROM cluster_nodes WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?
+    .flatten()
+    .unwrap_or(22);
 
     // Clear previous error
     sqlx::query("UPDATE cluster_nodes SET node_status = 'PROVISIONING', provision_error = NULL WHERE id = ?")
@@ -380,16 +406,16 @@ pub async fn reprovision(
     let node_id = id.clone();
     let ip = node.ip_address.clone();
     let hostname = node.hostname.clone();
-    let ssh_pass = body.ssh_password.clone();
+    let ssh_pass = body.ssh_password.clone().unwrap_or_default();
     tokio::spawn(async move {
         let result = std::panic::AssertUnwindSafe(async {
             if orch == "DOCKER" {
                 crate::k8s::node::provision_docker_node(
-                    &state_clone, &node_id, &cluster_id, &ip, &hostname, &ssh_pass, &storage_path, 9800,
+                    &state_clone, &node_id, &cluster_id, &ip, &hostname, &ssh_pass, ssh_port, &storage_path, 9800,
                 ).await
             } else {
                 crate::k8s::node::provision_node(
-                    &state_clone, &node_id, &cluster_id, &ip, &hostname, &ssh_pass, &role, &storage_path,
+                    &state_clone, &node_id, &cluster_id, &ip, &hostname, &ssh_pass, ssh_port, &role, &storage_path,
                 ).await
             }
         });
@@ -425,7 +451,9 @@ pub async fn reprovision(
 
 #[derive(Deserialize)]
 pub struct ReprovisionRequest {
-    pub ssh_password: String,
+    /// Omit/empty to reprovision over the platform key (no password needed once
+    /// the backend can already SSH to the node).
+    pub ssh_password: Option<String>,
 }
 
 /// PUT /admin/nodes/:id/labels

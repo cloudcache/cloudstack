@@ -39,9 +39,12 @@ pub struct InstallResult {
 
 pub struct NodeInstaller<'a> {
     ip: &'a str,
+    port: u16,
+    /// SSH password. Empty → authenticate with the platform private key instead
+    /// (the backend already has key access to root@node).
     password: &'a str,
     platform_pub_key: &'a str,
-    _platform_priv_key: &'a str,
+    platform_priv_key: &'a str,
     ldap_url: &'a str,
     ldap_base_dn: &'a str,
 }
@@ -49,6 +52,7 @@ pub struct NodeInstaller<'a> {
 impl<'a> NodeInstaller<'a> {
     pub fn new(
         ip: &'a str,
+        port: u16,
         password: &'a str,
         platform_pub_key: &'a str,
         platform_priv_key: &'a str,
@@ -57,9 +61,10 @@ impl<'a> NodeInstaller<'a> {
     ) -> Self {
         Self {
             ip,
+            port,
             password,
             platform_pub_key,
-            _platform_priv_key: platform_priv_key,
+            platform_priv_key,
             ldap_url,
             ldap_base_dn,
         }
@@ -651,10 +656,10 @@ tls_reqcert never\nNSLCDEOF\n\
         let log_id = logger.step_begin(0, "ssh_connect").await?;
 
         let config = Arc::new(client::Config::default());
-        let mut session = client::connect(config, (self.ip, 22u16), Handler)
+        let mut session = client::connect(config, (self.ip, self.port), Handler)
             .await
             .map_err(|e| {
-                let msg = format!("connect to {}: {e}", self.ip);
+                let msg = format!("connect to {}:{}: {e}", self.ip, self.port);
                 // Fire-and-forget: log the failure
                 let logger = logger.clone();
                 let msg2 = msg.clone();
@@ -664,13 +669,25 @@ tls_reqcert never\nNSLCDEOF\n\
                 AppError::Ssh(msg)
             })?;
 
-        let authed = session
-            .authenticate_password("root", self.password)
-            .await
-            .map_err(|e| AppError::Ssh(format!("auth: {e}")))?;
+        // Password auth when a password is supplied; otherwise authenticate with
+        // the platform private key (the backend can already SSH to root@node).
+        let authed = if !self.password.is_empty() {
+            session
+                .authenticate_password("root", self.password)
+                .await
+                .map_err(|e| AppError::Ssh(format!("password auth: {e}")))?
+        } else {
+            let keypair = russh_keys::decode_secret_key(self.platform_priv_key, None)
+                .map_err(|e| AppError::Ssh(format!("parse platform private key: {e}")))?;
+            session
+                .authenticate_publickey("root", Arc::new(keypair))
+                .await
+                .map_err(|e| AppError::Ssh(format!("key auth: {e}")))?
+        };
         if !authed {
-            logger.step_finish(log_id, "FAILED", Some("password auth failed")).await;
-            return Err(AppError::Ssh("SSH password authentication failed".into()));
+            let how = if self.password.is_empty() { "platform key" } else { "password" };
+            logger.step_finish(log_id, "FAILED", Some(&format!("{how} auth failed"))).await;
+            return Err(AppError::Ssh(format!("SSH {how} authentication failed")));
         }
 
         logger.step_finish(log_id, "OK", Some(&format!("connected to {}", self.ip))).await;

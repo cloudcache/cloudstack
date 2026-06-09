@@ -15,6 +15,7 @@ pub async fn provision_node(
     ip: &str,
     hostname: &str,
     ssh_password: &str,
+    ssh_port: u16,
     role: &str,
     storage_path: &str,
 ) -> AppResult<()> {
@@ -113,7 +114,7 @@ pub async fn provision_node(
     }
 
     let installer = NodeInstaller::new(
-        ip, ssh_password, &pub_key, &priv_key,
+        ip, ssh_port, ssh_password, &pub_key, &priv_key,
         &state.config.ldap.url, &state.config.ldap.base_dn,
     );
     let result = match installer
@@ -237,6 +238,7 @@ pub async fn provision_docker_node(
     ip: &str,
     hostname: &str,
     ssh_password: &str,
+    ssh_port: u16,
     storage_path: &str,
     agent_port: u16,
 ) -> AppResult<()> {
@@ -303,7 +305,7 @@ pub async fn provision_docker_node(
     .unwrap_or_else(|| format!("{}/static/qs-agent", backend_url));
 
     let installer = NodeInstaller::new(
-        ip, ssh_password, &pub_key, &priv_key,
+        ip, ssh_port, ssh_password, &pub_key, &priv_key,
         &state.config.ldap.url, &state.config.ldap.base_dn,
     );
     let result = match installer

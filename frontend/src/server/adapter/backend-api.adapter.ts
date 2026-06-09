@@ -1229,7 +1229,7 @@ export const adminNodes = {
      * { cluster_id, hostname, ip_address, node_role?, ssh_password, storage_path? }
      * Returns 202 Accepted — provisioning is async
      */
-    add(token: string, body: { cluster_id: string; hostname: string; ip_address: string; node_role?: string; ssh_password: string; storage_path?: string }): Promise<{ id: string; status: string; cluster_id: string; storage_path: string }> {
+    add(token: string, body: { cluster_id: string; hostname: string; ip_address: string; node_role?: string; ssh_password?: string; ssh_port?: number; storage_path?: string }): Promise<{ id: string; status: string; cluster_id: string; storage_path: string }> {
         return post(`${V1}/admin/nodes`, token, body);
     },
     /** GET /api/v1/admin/nodes/:id */
@@ -1261,11 +1261,11 @@ export const adminNodes = {
         return post(`${V1}/admin/nodes/${id}/uncordon`, token);
     },
     /** PUT /api/v1/admin/nodes/:id — update node settings */
-    update(token: string, id: string, body: { hostname?: string; ip_address?: string; node_role?: string; storage_path?: string }): Promise<unknown> {
+    update(token: string, id: string, body: { hostname?: string; ip_address?: string; node_role?: string; storage_path?: string; ssh_port?: number }): Promise<unknown> {
         return put(`${V1}/admin/nodes/${id}`, token, body);
     },
     /** POST /api/v1/admin/nodes/:id/reprovision — retry provisioning */
-    reprovision(token: string, id: string, body: { ssh_password: string }): Promise<unknown> {
+    reprovision(token: string, id: string, body: { ssh_password?: string }): Promise<unknown> {
         return post(`${V1}/admin/nodes/${id}/reprovision`, token, body);
     },
 };

@@ -24,6 +24,7 @@ interface NodeItem {
     cpu_capacity_mcores?: number;
     mem_capacity_mb?: number;
     storage_path?: string;
+    ssh_port?: number;
     cluster_name?: string;
     cluster_display_name?: string;
     cluster_id?: string;
@@ -47,13 +48,13 @@ export default function AdminNodesTab({ initialItems, clusters }: { initialItems
     const t = useT();
     const [items, setItems] = useState<NodeItem[]>(initialItems);
     const [showAdd, setShowAdd] = useState(false);
-    const [form, setForm] = useState({ cluster_id: '', hostname: '', ip_address: '', ssh_password: '', node_role: 'MASTER', storage_path: '/storage' });
+    const [form, setForm] = useState({ cluster_id: '', hostname: '', ip_address: '', ssh_password: '', ssh_port: '', node_role: 'MASTER', storage_path: '/storage' });
     const [saving, setSaving] = useState(false);
     const { openConfirmDialog } = useConfirmDialog();
 
     // Edit state
     const [editNode, setEditNode] = useState<NodeItem | null>(null);
-    const [editForm, setEditForm] = useState({ hostname: '', ip_address: '', node_role: '', storage_path: '' });
+    const [editForm, setEditForm] = useState({ hostname: '', ip_address: '', node_role: '', storage_path: '', ssh_port: '' });
     const [editSaving, setEditSaving] = useState(false);
 
     // Reprovision state
@@ -69,14 +70,15 @@ export default function AdminNodesTab({ initialItems, clusters }: { initialItems
             cluster_id: form.cluster_id,
             hostname: form.hostname,
             ip_address: form.ip_address,
-            ssh_password: form.ssh_password,
+            ssh_password: form.ssh_password || undefined,
+            ssh_port: form.ssh_port ? Number(form.ssh_port) : undefined,
             node_role: isDocker ? 'WORKER' : (form.node_role || undefined),
             storage_path: form.storage_path || undefined,
         });
         setSaving(false);
         if (result?.status === 'success') {
             setShowAdd(false);
-            setForm({ cluster_id: '', hostname: '', ip_address: '', ssh_password: '', node_role: 'MASTER', storage_path: '/storage' });
+            setForm({ cluster_id: '', hostname: '', ip_address: '', ssh_password: '', ssh_port: '', node_role: 'MASTER', storage_path: '/storage' });
             window.location.reload();
         }
     };
@@ -87,6 +89,7 @@ export default function AdminNodesTab({ initialItems, clusters }: { initialItems
             ip_address: node.ip_address,
             node_role: node.node_role || 'WORKER',
             storage_path: node.storage_path || '/storage',
+            ssh_port: node.ssh_port ? String(node.ssh_port) : '',
         });
         setEditNode(node);
     };
@@ -99,6 +102,7 @@ export default function AdminNodesTab({ initialItems, clusters }: { initialItems
             ip_address: editForm.ip_address,
             node_role: editForm.node_role,
             storage_path: editForm.storage_path,
+            ssh_port: editForm.ssh_port ? Number(editForm.ssh_port) : undefined,
         });
         setEditSaving(false);
         if (result?.status === 'success') {
@@ -294,9 +298,15 @@ export default function AdminNodesTab({ initialItems, clusters }: { initialItems
                                 <Input value={form.ip_address} onChange={e => setForm(f => ({ ...f, ip_address: e.target.value }))} placeholder="10.0.0.10" />
                             </div>
                         </div>
-                        <div className="space-y-2">
-                            <Label>{t('admin.nodes.sshPassword')}</Label>
-                            <Input type="password" value={form.ssh_password} onChange={e => setForm(f => ({ ...f, ssh_password: e.target.value }))} placeholder={t('admin.nodes.sshPasswordPlaceholder')} />
+                        <div className="grid grid-cols-3 gap-3">
+                            <div className="space-y-2 col-span-2">
+                                <Label>{t('admin.nodes.sshPassword')}</Label>
+                                <Input type="password" value={form.ssh_password} onChange={e => setForm(f => ({ ...f, ssh_password: e.target.value }))} placeholder="leave blank to use platform SSH key" />
+                            </div>
+                            <div className="space-y-2">
+                                <Label>SSH Port</Label>
+                                <Input type="number" min={1} max={65535} value={form.ssh_port} onChange={e => setForm(f => ({ ...f, ssh_port: e.target.value }))} placeholder="22" />
+                            </div>
                         </div>
                         {(() => {
                             const selectedCluster = clusters.find(c => c.id === form.cluster_id);
@@ -334,7 +344,7 @@ export default function AdminNodesTab({ initialItems, clusters }: { initialItems
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setShowAdd(false)}>{t('common.cancel')}</Button>
-                        <Button onClick={handleAdd} disabled={saving || !form.cluster_id || !form.hostname || !form.ip_address || !form.ssh_password}>
+                        <Button onClick={handleAdd} disabled={saving || !form.cluster_id || !form.hostname || !form.ip_address}>
                             {saving ? t('admin.nodes.adding') : t('admin.nodes.addNode')}
                         </Button>
                     </DialogFooter>
@@ -375,6 +385,10 @@ export default function AdminNodesTab({ initialItems, clusters }: { initialItems
                                 <Label>{t('admin.nodes.storagePath')}</Label>
                                 <Input value={editForm.storage_path} onChange={e => setEditForm(f => ({ ...f, storage_path: e.target.value }))} />
                             </div>
+                            <div className="space-y-2">
+                                <Label>SSH Port</Label>
+                                <Input type="number" min={1} max={65535} value={editForm.ssh_port} onChange={e => setEditForm(f => ({ ...f, ssh_port: e.target.value }))} placeholder="22" />
+                            </div>
                         </div>
                     </div>
                     <DialogFooter>
@@ -413,7 +427,7 @@ export default function AdminNodesTab({ initialItems, clusters }: { initialItems
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setReprovNode(null)}>{t('common.cancel')}</Button>
-                        <Button onClick={handleReprovisionSubmit} disabled={reprovSaving || !reprovPassword}>
+                        <Button onClick={handleReprovisionSubmit} disabled={reprovSaving}>
                             {reprovSaving ? t('admin.nodes.starting') : t('admin.nodes.retryProvisioning')}
                         </Button>
                     </DialogFooter>
