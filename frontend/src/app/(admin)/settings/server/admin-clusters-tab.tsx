@@ -113,12 +113,21 @@ export default function AdminClustersTab({ initialItems, clusterStorage, pools, 
         });
         setEditSaving(false);
         if (result?.status === 'success') {
+            // Rebuild the nested ip_pool snapshot from the selected pool so the
+            // row reflects the assignment immediately (the list badge checks
+            // `ip_pool`, not `ip_pool_id`); clears it when no pool is selected.
+            const selectedPool = editForm.ip_pool_id
+                ? ipPools.find(p => p.id === editForm.ip_pool_id)
+                : undefined;
             setItems(prev => prev.map(c => c.id === editItem.id ? {
                 ...c,
                 display_name: editForm.display_name || undefined,
                 description: editForm.description || undefined,
                 is_active: editForm.is_active,
                 ip_pool_id: editForm.ip_pool_id || undefined,
+                ip_pool: selectedPool
+                    ? { name: selectedPool.name, cidr: selectedPool.cidr, gateway: selectedPool.gateway }
+                    : undefined,
                 node_main_iface: editForm.node_main_iface || undefined,
             } : c));
             setEditItem(null);
