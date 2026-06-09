@@ -37,6 +37,7 @@
   "nav.website": "QuickStack Website",
   "nav.docs": "QuickStack Docs",
   "nav.adminPanel": "Admin Panel",
+  "nav.console": "Console",
   "nav.projectTooltip": "Project: {name}",
   "nav.resourcePools": "Resource Pools",
   "nav.clusters": "Clusters",

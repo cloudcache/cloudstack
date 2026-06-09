@@ -1,8 +1,8 @@
 import { getUserSession, getBackendToken } from "@/server/utils/action-wrapper.utils"
-import { SidebarCient } from "./sidebar-client"
+import { SidebarCient, SidebarTier } from "./sidebar-client"
 import { backend } from "@/server/adapter/backend-api.adapter"
 
-export async function AppSidebar() {
+export async function AppSidebar({ tier }: { tier: SidebarTier }) {
 
   const session = await getUserSession();
 
@@ -10,12 +10,15 @@ export async function AppSidebar() {
     return <></>
   }
   let projects: { id: string; name: string }[] = [];
-  try {
-    const token = await getBackendToken();
-    projects = (await backend.projects.list(token)) as { id: string; name: string }[];
-  } catch {
-    // If backend is unreachable, render sidebar with empty project list
+  // The project list is only used by the console sidebar.
+  if (tier === 'console') {
+    try {
+      const token = await getBackendToken();
+      projects = (await backend.projects.list(token)) as { id: string; name: string }[];
+    } catch {
+      // If backend is unreachable, render sidebar with empty project list
+    }
   }
 
-  return <SidebarCient projects={projects} session={session} />
+  return <SidebarCient projects={projects} session={session} tier={tier} />
 }

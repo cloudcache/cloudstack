@@ -17,9 +17,9 @@ import {
   SidebarMenuSubItem,
   useSidebar
 } from "@/components/ui/sidebar"
-import { BookOpen, Boxes, ChartNoAxesCombined, ChevronDown, ChevronUp, CreditCard, Cpu, Database, Dot, FolderClosed, GitBranch, HardDrive, History, Info, Mail, MemoryStick, MessageSquare, Network, Plus, Server, Settings2, Shield, Tag, User, User2, Workflow } from "lucide-react"
+import { BookOpen, Boxes, ChartNoAxesCombined, ChevronDown, ChevronUp, CreditCard, Cpu, Database, Dot, FolderClosed, GitBranch, HardDrive, History, Info, LayoutGrid, Mail, MemoryStick, MessageSquare, Network, Plus, Server, Settings2, Shield, ShieldCheck, Tag, User, User2, Workflow } from "lucide-react"
 import Link from "next/link"
-import { EditProjectDialog } from "./projects/edit-project-dialog"
+import { EditProjectDialog } from "./(console)/projects/edit-project-dialog"
 import { SidebarLogoutButton } from "./sidebar-logout-button"
 import {
   Avatar,
@@ -38,12 +38,16 @@ interface SidebarProject {
   name: string;
 }
 
+export type SidebarTier = 'admin' | 'console';
+
 export function SidebarCient({
   projects,
   session,
+  tier,
 }: {
   projects: SidebarProject[];
   session: UserSession;
+  tier: SidebarTier;
 }) {
 
   const path = usePathname();
@@ -52,20 +56,6 @@ export function SidebarCient({
   const [currentlySelectedProjectId, setCurrentlySelectedProjectId] = useState<string | null>(null);
 
   const isAdmin = UserGroupUtils.isAdmin(session);
-
-  const settingsMenu = [
-    {
-      title: t("nav.profile"),
-      url: "/settings/profile",
-      icon: User,
-    },
-    {
-      title: t("nav.usersGroups"),
-      url: "/settings/users",
-      icon: User2,
-      adminOnly: true,
-    },
-  ]
 
   const resourceMenu = [
     { title: t("nav.resourcePools"), url: "/resources/pools", icon: Cpu },
@@ -99,6 +89,19 @@ export function SidebarCient({
 
   const { open } = useSidebar()
 
+  const renderMenu = (items: { title: string; url: string; icon: any }[]) =>
+    items.map((item) => (
+      <SidebarMenuItem key={item.url}>
+        <SidebarMenuButton asChild tooltip={{ children: item.title, hidden: open }}
+          isActive={path.startsWith(item.url)}>
+          <Link href={item.url}>
+            <item.icon />
+            <span>{item.title}</span>
+          </Link>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    ));
+
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
@@ -113,7 +116,7 @@ export function SidebarCient({
                   </div>
                   <div className="grid flex-1 text-left text-sm leading-tight my-4">
                     <span className="truncate font-semibold">QuickStack</span>
-                    <span className="truncate text-xs">{t("nav.adminPanel")}</span>
+                    <span className="truncate text-xs">{tier === 'admin' ? t("nav.adminPanel") : t("nav.console")}</span>
                   </div>
                   <ChevronDown className="ml-auto" />
                 </SidebarMenuButton>
@@ -138,125 +141,132 @@ export function SidebarCient({
       </SidebarHeader>
 
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>{t("nav.menu")}</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip={{
-                  children: t("nav.projects"),
-                  hidden: open,
-                }}
-                  isActive={path === '/'}>
-                  <Link href="/">
-                    <FolderClosed />
-                    <span>{t("nav.projects")}</span>
-                  </Link>
-                </SidebarMenuButton>
-                <EditProjectDialog>
-                  <SidebarMenuAction>
-                    <Plus />
-                  </SidebarMenuAction>
-                </EditProjectDialog>
-                <SidebarMenu>
-                  {projects.map((item) => (
-                    <SidebarMenuItem key={item.id}>
-                      <SidebarMenuButton asChild tooltip={{
-                        children: t("nav.projectTooltip", { name: item.name }),
-                        hidden: open,
-                      }}
-                        isActive={currentlySelectedProjectId === item.id}
-                      >
-                        <Link href={`/project/${item.id}`}>
-                          <Dot /> <span>{item.name}</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  ))}
-                </SidebarMenu>
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        {!isAdmin && <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip={{
-                  children: t("nav.monitoring"),
-                  hidden: open,
-                }}
-                  isActive={path.startsWith('/monitoring')}>
-                  <Link href="/monitoring">
-                    <ChartNoAxesCombined />
-                    <span>{t("nav.monitoring")}</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>}
-
-        {isAdmin && <SidebarGroup>
-          <SidebarGroupLabel>{t("nav.resourceManagement")}</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {resourceMenu.map((item) => (
-                <SidebarMenuItem key={item.url}>
-                  <SidebarMenuButton asChild tooltip={{
-                    children: item.title,
-                    hidden: open,
-                  }}
-                    isActive={path.startsWith(item.url)}>
-                    <Link href={item.url}>
-                      <item.icon />
-                      <span>{item.title}</span>
+        {tier === 'console' && <>
+          <SidebarGroup>
+            <SidebarGroupLabel>{t("nav.menu")}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild tooltip={{ children: t("nav.projects"), hidden: open }}
+                    isActive={path === '/projects'}>
+                    <Link href="/projects">
+                      <FolderClosed />
+                      <span>{t("nav.projects")}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                  <EditProjectDialog>
+                    <SidebarMenuAction>
+                      <Plus />
+                    </SidebarMenuAction>
+                  </EditProjectDialog>
+                  <SidebarMenu>
+                    {projects.map((item) => (
+                      <SidebarMenuItem key={item.id}>
+                        <SidebarMenuButton asChild tooltip={{ children: t("nav.projectTooltip", { name: item.name }), hidden: open }}
+                          isActive={currentlySelectedProjectId === item.id}>
+                          <Link href={`/project/${item.id}`}>
+                            <Dot /> <span>{item.name}</span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild tooltip={{ children: t("nav.monitoring"), hidden: open }}
+                    isActive={path.startsWith('/monitoring')}>
+                    <Link href="/monitoring">
+                      <ChartNoAxesCombined />
+                      <span>{t("nav.monitoring")}</span>
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>}
+                {UserGroupUtils.sessionHasAccessToBackups(session) &&
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild tooltip={{ children: t("nav.backups"), hidden: open }}
+                      isActive={path.startsWith('/backups')}>
+                      <Link href="/backups">
+                        <History />
+                        <span>{t("nav.backups")}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
 
-        {isAdmin && <SidebarGroup>
-          <SidebarGroupLabel>{t("nav.businessManager")}</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {businessMenu.map((item) => (
-                <SidebarMenuItem key={item.url}>
-                  <SidebarMenuButton asChild tooltip={{
-                    children: item.title,
-                    hidden: open,
-                  }}
-                    isActive={path.startsWith(item.url)}>
-                    <Link href={item.url}>
-                      <item.icon />
-                      <span>{item.title}</span>
+          <SidebarGroup>
+            <SidebarGroupLabel>{t("nav.billing")}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild tooltip={{ children: t("nav.plans"), hidden: open }}
+                    isActive={path.startsWith('/plans')}>
+                    <Link href="/plans">
+                      <Tag />
+                      <span>{t("nav.plans")}</span>
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>}
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild tooltip={{ children: t("nav.billing"), hidden: open }}
+                    isActive={path.startsWith('/billing')}>
+                    <Link href="/billing">
+                      <CreditCard />
+                      <span>{t("nav.billing")}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </>}
 
+        {tier === 'admin' && <>
+          <SidebarGroup>
+            <SidebarGroupLabel>{t("nav.resourceManagement")}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>{renderMenu(resourceMenu)}</SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
 
-        {UserGroupUtils.sessionHasAccessToBackups(session) && <SidebarGroup>
+          <SidebarGroup>
+            <SidebarGroupLabel>{t("nav.businessManager")}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {renderMenu(businessMenu)}
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild tooltip={{ children: t("nav.usersGroups"), hidden: open }}
+                    isActive={path.startsWith('/settings/users')}>
+                    <Link href="/settings/users">
+                      <User2 />
+                      <span>{t("nav.usersGroups")}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </>}
+
+        {/* Cross-tier switch (admins only) */}
+        {isAdmin && <SidebarGroup className="mt-auto">
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip={{
-                  children: t("nav.backups"),
-                  hidden: open,
-                }}
-                  isActive={path.startsWith('/backups')}>
-                  <Link href="/backups">
-                    <History />
-                    <span>{t("nav.backups")}</span>
-                  </Link>
-                </SidebarMenuButton>
+                {tier === 'console'
+                  ? <SidebarMenuButton asChild tooltip={{ children: t("nav.adminPanel"), hidden: open }}>
+                    <Link href="/resources/pools">
+                      <ShieldCheck />
+                      <span>{t("nav.adminPanel")}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                  : <SidebarMenuButton asChild tooltip={{ children: t("nav.console"), hidden: open }}>
+                    <Link href="/projects">
+                      <LayoutGrid />
+                      <span>{t("nav.console")}</span>
+                    </Link>
+                  </SidebarMenuButton>}
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
@@ -266,58 +276,21 @@ export function SidebarCient({
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip={{
-                  children: t("nav.plans"),
-                  hidden: open,
-                }}
-                  isActive={path.startsWith('/plans')}>
-                  <Link href="/plans">
-                    <Tag />
-                    <span>{t("nav.plans")}</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip={{
-                  children: t("nav.billing"),
-                  hidden: open,
-                }}
-                  isActive={path.startsWith('/billing')}>
-                  <Link href="/billing">
-                    <CreditCard />
-                    <span>{t("nav.billing")}</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip={{
-                  children: t("nav.settings"),
-                  hidden: open,
-                }}>
+                <SidebarMenuButton asChild tooltip={{ children: t("nav.settings"), hidden: open }}
+                  isActive={path.startsWith('/settings/profile')}>
                   <Link href="/settings/profile">
                     <Settings2 />
                     <span>{t("nav.settings")}</span>
                   </Link>
                 </SidebarMenuButton>
                 <SidebarMenuSub>
-                  {(isAdmin ? settingsMenu :
-                    settingsMenu.filter(x => !x.adminOnly)).map((item) => (
-                      <SidebarMenuSubItem key={item.url}>
-                        <SidebarMenuButton asChild>
-                          <Link href={item.url}>
-                            <span>{item.title}</span>
-                          </Link>
-                        </SidebarMenuButton>
-                      </SidebarMenuSubItem>
-                    ))}
+                  <SidebarMenuSubItem>
+                    <SidebarMenuButton asChild>
+                      <Link href="/settings/profile">
+                        <span>{t("nav.profile")}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuSubItem>
                 </SidebarMenuSub>
               </SidebarMenuItem>
             </SidebarMenu>

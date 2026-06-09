@@ -37,6 +37,7 @@
   "nav.website": "QuickStack 官网",
   "nav.docs": "QuickStack 文档",
   "nav.adminPanel": "管理面板",
+  "nav.console": "控制台",
   "nav.projectTooltip": "项目：{name}",
   "nav.resourcePools": "资源池",
   "nav.clusters": "集群",
