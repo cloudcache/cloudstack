@@ -8,6 +8,14 @@ off.
 
 Baseline: backend `cargo check` passes (SQLX_OFFLINE=true).
 
+**固化 status (iter 10):** migrations 026–029 applied to the live `quickstack` DB and schema effects
+verified (build_jobs.node_id/container_id, wallet_transactions.idempotency_key UNIQUE, totp_credentials
++ app_db_tools dropped, registry_insecure seeded). `cargo sqlx prepare` regenerated `.sqlx` against the
+live schema → **all macro queries validated**; offline build green. Running backend (`:3001`) confirmed
+to be the latest code (TOTP routes 404, registration-status 200, login 422). `.sqlx` is gitignored
+(local-only, pre-existing). NOT yet exercised on real infra: actual Docker/K3s build run, Stripe webhook,
+end-to-end deploy (need a cluster + registry + Stripe keys).
+
 Legend: `[ ]` open · `[x]` done · `[~]` needs product decision (do not auto-fix)
 
 ---
